@@ -44,11 +44,13 @@ public class MainActivity extends AppCompatActivity implements NavigationView.On
     private boolean editInputControls = false;
     private int selectedProfileId;
     private Callback<Uri> openFileCallback;
+    private Callback<Uri> openDirectoryCallback;
     private SharedPreferences preferences;
     private Fragment currentFragment;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        com.winlator.pro.WinlatorProSuite.installGlobalCrashGuard();
         AppUtils.setActivityTheme(this);
         super.onCreate(savedInstanceState);
         setContentView(R.layout.main_activity);
@@ -105,10 +107,16 @@ public class MainActivity extends AppCompatActivity implements NavigationView.On
     @Override
     public void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode == MainActivity.OPEN_FILE_REQUEST_CODE && resultCode == Activity.RESULT_OK) {
+        if (requestCode == MainActivity.OPEN_FILE_REQUEST_CODE && resultCode == Activity.RESULT_OK && data != null) {
             if (openFileCallback != null) {
                 openFileCallback.call(data.getData());
                 openFileCallback = null;
+            }
+        }
+        else if (requestCode == MainActivity.OPEN_DIRECTORY_REQUEST_CODE && resultCode == Activity.RESULT_OK && data != null) {
+            if (openDirectoryCallback != null) {
+                openDirectoryCallback.call(data.getData());
+                openDirectoryCallback = null;
             }
         }
     }
@@ -141,7 +149,25 @@ public class MainActivity extends AppCompatActivity implements NavigationView.On
         this.openFileCallback = openFileCallback;
     }
 
+    public void setOpenDirectoryCallback(Callback<Uri> openDirectoryCallback) {
+        this.openDirectoryCallback = openDirectoryCallback;
+    }
+
     private boolean requestAppPermissions() {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+            if (!android.os.Environment.isExternalStorageManager()) {
+                try {
+                    Intent intent = new Intent(android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION);
+                    intent.setData(Uri.parse("package:" + getPackageName()));
+                    startActivity(intent);
+                } catch (Throwable e) {
+                    try {
+                        Intent intent = new Intent(android.provider.Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION);
+                        startActivity(intent);
+                    } catch (Throwable ignored) {}
+                }
+            }
+        }
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED &&
             ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED) return false;
 

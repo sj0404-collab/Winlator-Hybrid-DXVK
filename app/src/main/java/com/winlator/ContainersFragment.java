@@ -56,7 +56,7 @@ public class ContainersFragment extends Fragment {
         manager = new ContainerManager(getContext());
         ViewGroup proHeader = view.findViewById(R.id.FLProTopHeader);
         if (proHeader != null && getActivity() != null) {
-            Container target = manager.ensureDefaultHybridContainer();
+            Container target = manager.getDefaultOrFirstContainer();
             proHeader.removeAllViews();
             proHeader.addView(WinlatorProSuite.buildTopProDashboardBar(getActivity(), target, this::loadContainersList));
         }

@@ -97,6 +97,7 @@ public class PEParser {
                 ImageResourceDirectoryEntry directoryEntry = new ImageResourceDirectoryEntry(data);
 
                 if ((directoryEntry.name == type && directoryEntry.dataIsDirectory) || (level > 0 && directoryEntry.dataIsDirectory)) {
+                    if (level >= 8 || directoryEntry.offsetToData < 0 || directoryEntry.offsetToData >= data.limit()) continue;
                     int oldPosition = data.position();
                     data.position(directoryEntry.offsetToData);
                     directoryEntry.directory = new ImageResourceDirectory(type, data, level + 1);
@@ -105,6 +106,7 @@ public class PEParser {
                     entries.add(0, directoryEntry);
                 }
                 else if (level > 0) {
+                    if (directoryEntry.offsetToData < 0 || directoryEntry.offsetToData + 16 > data.limit()) continue;
                     int oldPosition = data.position();
                     data.position(directoryEntry.offsetToData);
                     ImageResourceDataEntry dataEntry = new ImageResourceDataEntry(data);
@@ -267,6 +269,7 @@ public class PEParser {
     }
 
     private ByteBuffer readResourceData(int dataOffset, int dataSize) {
+        if (dataOffset < 0 || dataSize <= 0 || dataSize > 16 * 1024 * 1024) return null;
         try (InputStream inStream = new BufferedInputStream(new FileInputStream(peFile), StreamUtils.BUFFER_SIZE)) {
             byte[] bytes = new byte[dataSize];
             StreamUtils.skip(inStream, dataOffset);
@@ -274,7 +277,7 @@ public class PEParser {
 
             return bytesRead != -1 ? ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN) : null;
         }
-        catch (IOException e) {
+        catch (Throwable e) {
             return null;
         }
     }
@@ -291,6 +294,7 @@ public class PEParser {
 
             dosHeader.position(60);
             int fileHeaderOffset = dosHeader.getInt() + 4;
+            if (fileHeaderOffset < filePosition || fileHeaderOffset > peFile.length()) return null;
 
             filePosition += StreamUtils.skip(inStream, fileHeaderOffset - filePosition);
 
@@ -299,9 +303,11 @@ public class PEParser {
 
             int machine = Short.toUnsignedInt(fileHeader.getShort());
             short numberOfSections = fileHeader.getShort();
+            if (numberOfSections <= 0 || numberOfSections > 96) return null;
 
             fileHeader.position(fileHeader.position() + 12);
             short sizeofOptionalHeader = fileHeader.getShort();
+            if (sizeofOptionalHeader < 0) return null;
 
             filePosition += StreamUtils.skip(inStream, sizeofOptionalHeader);
 
@@ -328,7 +334,7 @@ public class PEParser {
                 }
             }
 
-            if (resourcesOffset > 0) {
+            if (resourcesOffset > 0 && resourcesSize > 0 && resourcesSize <= 24 * 1024 * 1024) {
                 filePosition += StreamUtils.skip(inStream, resourcesOffset - filePosition);
 
                 ByteBuffer resourcesBuffer = ByteBuffer.allocate(resourcesSize).order(ByteOrder.LITTLE_ENDIAN);
@@ -339,7 +345,7 @@ public class PEParser {
 
             return null;
         }
-        catch (IOException e) {
+        catch (Throwable e) {
             return null;
         }
     }
@@ -499,6 +505,11 @@ public class PEParser {
     }
 
     public static Bitmap extractIcon(File peFile, int iconIndex) {
-        return (new PEParser(peFile)).extractIcon(iconIndex);
+        try {
+            if (peFile == null || !peFile.isFile()) return null;
+            return (new PEParser(peFile)).extractIcon(iconIndex);
+        } catch (Throwable e) {
+            return null;
+        }
     }
 }

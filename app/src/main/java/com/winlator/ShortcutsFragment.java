@@ -44,7 +44,10 @@ public class ShortcutsFragment extends BaseFileManagerFragment<Shortcut> {
         super.refreshContent();
 
         if (getContext() != null && manager != null) {
-            WinlatorProSuite.syncInstalledExeToDesktopWithIcons(getContext(), manager.ensureDefaultHybridContainer());
+            com.winlator.container.Container defCont = manager.getDefaultOrFirstContainer();
+            if (defCont != null) {
+                WinlatorProSuite.syncInstalledExeToDesktopWithIcons(getContext(), defCont);
+            }
         }
         Shortcut selectedFolder = !folderStack.isEmpty() ? folderStack.peek() : null;
         ArrayList<Shortcut> shortcuts = manager.loadShortcuts(selectedFolder);

@@ -32,27 +32,32 @@ public class PreloaderDialog {
     }
 
     public synchronized void show(int textResId) {
-        if (isShowing()) return;
-        close();
-        if (dialog == null) create();
-        ((TextView)dialog.findViewById(R.id.TextView)).setText(textResId);
-        dialog.show();
+        if (activity == null || activity.isFinishing() || activity.isDestroyed()) return;
+        try {
+            if (isShowing()) return;
+            close();
+            if (dialog == null) create();
+            ((TextView)dialog.findViewById(R.id.TextView)).setText(textResId);
+            dialog.show();
+        } catch (Throwable ignored) {}
     }
 
     public void showOnUiThread(final int textResId) {
+        if (activity == null || activity.isFinishing() || activity.isDestroyed()) return;
         activity.runOnUiThread(() -> show(textResId));
     }
 
     public synchronized void close() {
         try {
-            if (dialog != null) {
+            if (dialog != null && dialog.isShowing()) {
                 dialog.dismiss();
             }
         }
-        catch (Exception e) {}
+        catch (Throwable e) {}
     }
 
     public void closeOnUiThread() {
+        if (activity == null) return;
         activity.runOnUiThread(this::close);
     }
 

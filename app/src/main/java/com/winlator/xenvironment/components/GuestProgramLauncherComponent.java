@@ -26,6 +26,7 @@ import java.util.List;
 public class GuestProgramLauncherComponent extends EnvironmentComponent {
     private String guestExecutable;
     private static int pid = -1;
+    private volatile boolean stopping = false;
     private EnvVars envVars;
     private String box64Preset = Box64Preset.CONSERVATIVE;
     private Callback<Integer> terminationCallback;
@@ -35,6 +36,7 @@ public class GuestProgramLauncherComponent extends EnvironmentComponent {
     public void start() {
         synchronized (lock) {
             stop();
+            stopping = false;
             extractBox64File();
             copyDefaultBox64RCFile();
             pid = execGuestProgram();
@@ -44,6 +46,7 @@ public class GuestProgramLauncherComponent extends EnvironmentComponent {
     @Override
     public void stop() {
         synchronized (lock) {
+            stopping = true;
             if (pid != -1) {
                 Process.killProcess(pid);
                 pid = -1;
@@ -111,7 +114,7 @@ public class GuestProgramLauncherComponent extends EnvironmentComponent {
             synchronized (lock) {
                 pid = -1;
             }
-            if (terminationCallback != null) terminationCallback.call(status);
+            if (!stopping && terminationCallback != null) terminationCallback.call(status);
         });
     }
 

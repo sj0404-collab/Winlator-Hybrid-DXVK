@@ -72,21 +72,31 @@ public class EffectComposer {
     }
 
     public synchronized void render() {
-        initBuffers();
+        if (renderer.surfaceWidth <= 0 || renderer.surfaceHeight <= 0) {
+            renderer.drawFrame();
+            return;
+        }
+        try {
+            initBuffers();
 
-        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, hasEffects() ? readBuffer.getFramebuffer() : 0);
-        renderer.drawFrame();
+            GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, hasEffects() ? readBuffer.getFramebuffer() : 0);
+            renderer.drawFrame();
 
-        for (Effect effect : effects) {
-            boolean renderToScreen = effect == effects.get(effects.size()-1);
+            for (Effect effect : effects) {
+                boolean renderToScreen = effect == effects.get(effects.size()-1);
 
-            GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, !renderToScreen ? writeBuffer.getFramebuffer() : 0);
-            GLES20.glViewport(0, 0, renderer.surfaceWidth, renderer.surfaceHeight);
-            renderer.viewportNeedsUpdate = true;
-            GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT);
+                GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, !renderToScreen ? writeBuffer.getFramebuffer() : 0);
+                GLES20.glViewport(0, 0, renderer.surfaceWidth, renderer.surfaceHeight);
+                renderer.viewportNeedsUpdate = true;
+                GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT);
 
-            renderEffect(effect);
-            swapBuffers();
+                renderEffect(effect);
+                swapBuffers();
+            }
+        } catch (Throwable t) {
+            effects.clear();
+            GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0);
+            renderer.drawFrame();
         }
     }
 }

@@ -17,6 +17,7 @@ public class FXAAEffect extends Effect {
 
                     "uniform sampler2D screenTexture;",
                     "uniform vec2 resolution;",
+                    "in vec2 vUV;",
 
                     "const vec3 luma = vec3(0.299, 0.587, 0.114);",
 

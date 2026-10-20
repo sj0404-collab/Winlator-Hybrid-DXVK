@@ -32,6 +32,7 @@ public abstract class MSLink {
 
     public static final class LinkInfo {
         public String targetPath;
+        public String workingDir;
         public String arguments;
         public String iconLocation;
         public int iconIndex;
@@ -117,24 +118,36 @@ public abstract class MSLink {
     }
 
     public static boolean createFile(LinkInfo linkInfo, File outputFile) {
+        if (linkInfo == null || linkInfo.targetPath == null || linkInfo.targetPath.isEmpty() || outputFile == null) return false;
+        try {
         byte[] HeaderSize = new byte[]{0x4c, 0x00, 0x00, 0x00};
         byte[] LinkCLSID = convertCLSIDtoDATA("00021401-0000-0000-c000-000000000046");
 
+        linkInfo.targetPath = linkInfo.targetPath.replaceAll("/+", "\\\\");
+        if ((linkInfo.workingDir == null || linkInfo.workingDir.isEmpty()) && !linkInfo.isDirectory) {
+            int lastSlash = linkInfo.targetPath.lastIndexOf('\\');
+            if (lastSlash > 0) {
+                linkInfo.workingDir = linkInfo.targetPath.substring(0, lastSlash);
+            }
+        }
+
         int linkFlags = HasLinkTargetIDList | ForceNoLinkInfo;
+        if (linkInfo.workingDir != null && !linkInfo.workingDir.isEmpty()) linkFlags |= HasWorkingDir;
         if (linkInfo.arguments != null && !linkInfo.arguments.isEmpty()) linkFlags |= HasArguments;
         if (linkInfo.iconLocation != null && !linkInfo.iconLocation.isEmpty()) linkFlags |= HasIconLocation;
 
         byte[] LinkFlags = intToByteArray(linkFlags);
 
         byte[] FileAttributes, prefixOfTarget;
-        linkInfo.targetPath = linkInfo.targetPath.replaceAll("/+", "\\\\");
+        final byte[] prefixOfDirectory = new byte[]{0x31, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+        final byte[] prefixOfArchive = new byte[]{0x32, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
         if (linkInfo.isDirectory) {
             FileAttributes = new byte[]{0x10, 0x00, 0x00, 0x00};
-            prefixOfTarget = new byte[]{0x31, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+            prefixOfTarget = prefixOfDirectory;
         }
         else {
             FileAttributes = new byte[]{0x20, 0x00, 0x00, 0x00};
-            prefixOfTarget = new byte[]{0x32, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+            prefixOfTarget = prefixOfArchive;
         }
 
         byte[] CreationTime, AccessTime, WriteTime;
@@ -151,31 +164,43 @@ public abstract class MSLink {
         byte[] CLSIDComputer = convertCLSIDtoDATA("20d04fe0-3aea-1069-a2d8-08002b30309d");
         byte[] CLSIDNetwork = convertCLSIDtoDATA("208d2c60-3aea-1069-a2d7-08002b30309d");
 
-        byte[] itemData, prefixRoot, targetRoot, targetLeaf;
+        byte[] endOfString = new byte[]{0x00};
+        byte[] IDListItems;
         if (linkInfo.targetPath.startsWith("\\")) {
-            prefixRoot = new byte[]{(byte)0xc3, 0x01, (byte)0x81};
-            targetRoot = stringToByteArray(linkInfo.targetPath);
-            targetLeaf = !linkInfo.targetPath.endsWith("\\") ? stringToByteArray(linkInfo.targetPath.substring(linkInfo.targetPath.lastIndexOf("\\") + 1)) : null;
-            itemData = ArrayUtils.concat(new byte[]{0x1f, 0x58}, CLSIDNetwork);
+            byte[] prefixRoot = new byte[]{(byte)0xc3, 0x01, (byte)0x81};
+            byte[] targetRoot = ArrayUtils.concat(stringToByteArray(linkInfo.targetPath), new byte[21]);
+            byte[] targetLeaf = !linkInfo.targetPath.endsWith("\\") ? stringToByteArray(linkInfo.targetPath.substring(linkInfo.targetPath.lastIndexOf("\\") + 1)) : null;
+            byte[] itemData = ArrayUtils.concat(new byte[]{0x1f, 0x58}, CLSIDNetwork);
+            IDListItems = ArrayUtils.concat(generateIDLIST(itemData), generateIDLIST(ArrayUtils.concat(prefixRoot, targetRoot, endOfString)));
+            if (targetLeaf != null) IDListItems = ArrayUtils.concat(IDListItems, generateIDLIST(ArrayUtils.concat(prefixOfTarget, targetLeaf, endOfString)));
         }
         else {
-            prefixRoot = new byte[]{0x2f};
+            byte[] prefixRoot = new byte[]{0x2f};
             int index = linkInfo.targetPath.indexOf("\\");
-            targetRoot = stringToByteArray(linkInfo.targetPath.substring(0, index+1));
-            targetLeaf = stringToByteArray(linkInfo.targetPath.substring(index+1));
-            itemData = ArrayUtils.concat(new byte[]{0x1f, 0x50}, CLSIDComputer);
+            String rootStr = index != -1 ? linkInfo.targetPath.substring(0, index + 1) : linkInfo.targetPath + "\\";
+            String restStr = index != -1 ? linkInfo.targetPath.substring(index + 1) : "";
+            byte[] targetRoot = ArrayUtils.concat(stringToByteArray(rootStr), new byte[21]);
+            byte[] itemData = ArrayUtils.concat(new byte[]{0x1f, 0x50}, CLSIDComputer);
+            IDListItems = ArrayUtils.concat(generateIDLIST(itemData), generateIDLIST(ArrayUtils.concat(prefixRoot, targetRoot, endOfString)));
+
+            if (!restStr.isEmpty()) {
+                String[] segments = restStr.split("\\\\+");
+                for (int i = 0; i < segments.length; i++) {
+                    String seg = segments[i];
+                    if (seg.isEmpty()) continue;
+                    boolean isLast = (i == segments.length - 1);
+                    byte[] segPrefix = isLast ? prefixOfTarget : prefixOfDirectory;
+                    byte[] segBytes = stringToByteArray(seg);
+                    IDListItems = ArrayUtils.concat(IDListItems, generateIDLIST(ArrayUtils.concat(segPrefix, segBytes, endOfString)));
+                }
+            }
         }
-
-        targetRoot = ArrayUtils.concat(targetRoot, new byte[21]);
-
-        byte[] endOfString = new byte[]{0x00};
-        byte[] IDListItems = ArrayUtils.concat(generateIDLIST(itemData), generateIDLIST(ArrayUtils.concat(prefixRoot, targetRoot, endOfString)));
-        if (targetLeaf != null) IDListItems = ArrayUtils.concat(IDListItems, generateIDLIST(ArrayUtils.concat(prefixOfTarget, targetLeaf, endOfString)));
         byte[] IDList = generateIDLIST(IDListItems);
 
         byte[] TerminalID = new byte[]{0x00, 0x00};
 
         byte[] StringData = new byte[0];
+        if ((linkFlags & HasWorkingDir) != 0) StringData = ArrayUtils.concat(StringData, generateStringData(linkInfo.workingDir));
         if ((linkFlags & HasArguments) != 0) StringData = ArrayUtils.concat(StringData, generateStringData(linkInfo.arguments));
         if ((linkFlags & HasIconLocation) != 0) StringData = ArrayUtils.concat(StringData, generateStringData(linkInfo.iconLocation));
 
@@ -200,14 +225,16 @@ public abstract class MSLink {
             if (StringData.length > 0) os.write(StringData);
             return true;
         }
-        catch (IOException e) {
+        }
+        catch (Throwable e) {
             return false;
         }
     }
 
     public static LinkInfo extractLinkInfo(File linkFile) {
+        try {
         byte[] bytes = FileUtils.read(linkFile);
-        if (bytes == null) return null;
+        if (bytes == null || bytes.length < 0x4c) return null;
 
         ByteBuffer data = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
         if (data.get() != 0x4c || data.get() != 0x00 || data.get() != 0x00 || data.get() != 0x00) return null;
@@ -296,6 +323,7 @@ public abstract class MSLink {
 
         if ((LinkFlags & HasWorkingDir) != 0) {
             String workingDir = readStringData(data, isUnicode);
+            if (linkInfo != null) linkInfo.workingDir = workingDir;
         }
 
         if ((LinkFlags & HasArguments) != 0) {
@@ -312,5 +340,8 @@ public abstract class MSLink {
         }
 
         return linkInfo;
+        } catch (Throwable e) {
+            return null;
+        }
     }
 }

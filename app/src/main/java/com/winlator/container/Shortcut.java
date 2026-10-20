@@ -81,9 +81,13 @@ public class Shortcut {
             this.iconFile = iconFile;
             this.wmClass = wmClass;
 
-            String path = !execArgs.isEmpty() ? StringUtils.unescapeDOSPath(execArgs.substring(execArgs.lastIndexOf("wine ") + 4)) : "";
+            String path = !execArgs.isEmpty() && execArgs.contains("wine ") ? StringUtils.unescapeDOSPath(execArgs.substring(execArgs.lastIndexOf("wine ") + 5)) : "";
             index = path.indexOf("start.exe ");
             if (index != -1) path = path.substring(index+10);
+            path = path.trim();
+            while (path.startsWith("\"") && path.endsWith("\"") && path.length() >= 2) {
+                path = path.substring(1, path.length() - 1).trim();
+            }
 
             this.path = path;
             Container.checkObsoleteOrMissingProperties(extraData);

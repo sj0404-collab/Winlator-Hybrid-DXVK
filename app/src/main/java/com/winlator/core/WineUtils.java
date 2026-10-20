@@ -245,32 +245,65 @@ public abstract class WineUtils {
     }
 
     public static String unixToDOSPath(String unixPath, Container container) {
+        if (unixPath == null || unixPath.isEmpty()) return "";
+        String extRoot = android.os.Environment.getExternalStorageDirectory().getPath();
+        if (unixPath.startsWith("/sdcard/")) {
+            unixPath = extRoot + unixPath.substring(7);
+        } else if (unixPath.equals("/sdcard")) {
+            unixPath = extRoot;
+        }
+
         String dosPath = "";
         String driveLetter = "";
 
-        for (Drive drive : container.drivesIterator()) {
-            if (unixPath.startsWith(drive.path)) {
-                driveLetter = drive.letter+":";
-                dosPath = unixPath.substring(drive.path.length()).replace("/", "\\");
-                break;
+        int index = unixPath.indexOf("/.wine/drive_c");
+        if (index != -1) {
+            driveLetter = "C:";
+            dosPath = unixPath.substring(index + 14).replace("/", "\\");
+        }
+
+        if (driveLetter.isEmpty() && container != null) {
+            int bestLen = -1;
+            for (Drive drive : container.drivesIterator()) {
+                if (drive.path != null && !drive.path.isEmpty() && unixPath.startsWith(drive.path)) {
+                    if (drive.path.length() > bestLen) {
+                        bestLen = drive.path.length();
+                        driveLetter = drive.letter + ":";
+                        dosPath = unixPath.substring(drive.path.length()).replace("/", "\\");
+                    }
+                }
             }
         }
 
-        if (dosPath.isEmpty()) {
-            int index = unixPath.indexOf("/.wine/drive_c");
-            if (index != -1) {
-                driveLetter = "C:";
-                dosPath = unixPath.substring(index + 14).replace("/", "\\");
+        if (driveLetter.isEmpty() && unixPath.startsWith(extRoot)) {
+            driveLetter = "G:";
+            dosPath = unixPath.substring(extRoot.length()).replace("/", "\\");
+            if (container != null) {
+                String drives = container.getDrives();
+                if (drives == null) drives = "";
+                if (!drives.contains("G:")) {
+                    container.setDrives(drives + "G:" + extRoot);
+                    container.saveData();
+                    try {
+                        createDosdevicesSymlinks(container, false);
+                    } catch (Throwable ignored) {}
+                }
             }
         }
 
-        if (!dosPath.startsWith("\\")) dosPath += "\\";
-        dosPath = driveLetter+StringUtils.removeEndSlash(dosPath);
+        if (driveLetter.isEmpty()) {
+            driveLetter = "Z:";
+            dosPath = unixPath.replace("/", "\\");
+        }
+
+        if (!dosPath.startsWith("\\")) dosPath = "\\" + dosPath;
+        dosPath = driveLetter + StringUtils.removeEndSlash(dosPath);
         if (dosPath.equals(driveLetter)) dosPath += "\\";
         return dosPath;
     }
 
     public static String dosToUnixPath(String dosPath, Container container) {
+        if (dosPath == null) return "";
         int index = dosPath.indexOf(":");
         if (index == -1) return "";
 
@@ -282,18 +315,22 @@ public abstract class WineUtils {
             unixPath = container.getRootDir()+"/.wine/drive_c/"+relativePath;
         }
         else if (driveLetter.equals("Z")) {
-            File rootDir = new File(container.getRootDir(), "../../");
-            try {
-                unixPath = rootDir.getCanonicalPath()+"/"+relativePath;
-            }
-            catch (IOException e) {}
+            unixPath = "/" + relativePath;
         }
         else {
-            for (Drive drive : container.drivesIterator()) {
-                if (drive.letter.equals(driveLetter)) {
-                    unixPath = drive.path+"/"+relativePath;
-                    break;
+            if (container != null) {
+                for (Drive drive : container.drivesIterator()) {
+                    if (drive.letter.equalsIgnoreCase(driveLetter)) {
+                        unixPath = drive.path+"/"+relativePath;
+                        break;
+                    }
                 }
+            }
+            if (unixPath.isEmpty() && driveLetter.equals("G")) {
+                unixPath = android.os.Environment.getExternalStorageDirectory().getPath() + "/" + relativePath;
+            }
+            else if (unixPath.isEmpty() && driveLetter.equals("D")) {
+                unixPath = AppUtils.DIRECTORY_DOWNLOADS + "/" + relativePath;
             }
         }
 

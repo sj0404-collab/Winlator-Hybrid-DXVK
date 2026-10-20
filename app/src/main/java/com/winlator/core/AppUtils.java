@@ -69,8 +69,12 @@ public abstract class AppUtils {
     }
 
     public static void restartApplication(Context context, RestartApplicationOptions options) {
+        try {
+            com.winlator.services.ForegroundService.stopSession(context);
+        } catch (Throwable ignored) {}
         Intent intent = context.getPackageManager().getLaunchIntentForPackage(context.getPackageName());
         Intent mainIntent = Intent.makeRestartActivityTask(intent.getComponent());
+        mainIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
 
         if (options != null) {
             if (options.selectedMenuItemId > 0) mainIntent.putExtra("selected_menu_item_id", options.selectedMenuItemId);
@@ -79,7 +83,12 @@ public abstract class AppUtils {
         }
 
         context.startActivity(mainIntent);
-        Runtime.getRuntime().exit(0);
+        if (context instanceof Activity) {
+            try {
+                ((Activity) context).finish();
+                ((Activity) context).overridePendingTransition(0, 0);
+            } catch (Throwable ignored) {}
+        }
     }
 
     public static void showKeyboard(AppCompatActivity activity) {

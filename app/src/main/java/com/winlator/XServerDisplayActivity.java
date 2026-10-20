@@ -102,6 +102,7 @@ import java.io.File;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public class XServerDisplayActivity extends AppCompatActivity implements NavigationView.OnNavigationItemSelectedListener {
     private XServerView xServerView;
@@ -116,6 +117,10 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
     private FrameRating frameRating;
     private Runnable editInputControlsCallback;
     private Shortcut shortcut;
+    private PreloaderDialog preloaderDialog;
+    private final AtomicBoolean isExiting = new AtomicBoolean(false);
+    private String pendingExecCommand = null;
+    private String pendingExecArgs = "";
     private String[] graphicsDriver = {GraphicsDrivers.DEFAULT_VULKAN_DRIVER, GraphicsDrivers.DEFAULT_OPENGL_DRIVER};
     private String audioDriver = Container.DEFAULT_AUDIO_DRIVER;
     private String dxwrapper = Container.DEFAULT_DXWRAPPER;
@@ -147,7 +152,7 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
         setContentView(R.layout.xserver_display_activity);
         ForegroundService.startSession(this);
 
-        final PreloaderDialog preloaderDialog = new PreloaderDialog(this);
+        preloaderDialog = new PreloaderDialog(this);
         preferences = PreferenceManager.getDefaultSharedPreferences(this);
         boolean useAndroidClipboardOnWine = preferences.getBoolean("use_android_clipboard_on_wine", false);
         clipboardManager = useAndroidClipboardOnWine ? (ClipboardManager)getSystemService(CLIPBOARD_SERVICE) : null;
@@ -169,6 +174,13 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
         if (!isGenerateWineprefix()) {
             ContainerManager containerManager = new ContainerManager(this);
             container = containerManager.getContainerById(getIntent().getIntExtra("container_id", 0));
+            if (container == null) {
+                container = containerManager.ensureDefaultHybridContainer();
+            }
+            if (container == null) {
+                finish();
+                return;
+            }
             containerManager.activateContainer(container);
 
             boolean wineprefixNeedsUpdate = container.getExtra("wineprefixNeedsUpdate").equals("t");
@@ -343,9 +355,13 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
 
     @Override
     protected void onDestroy() {
-        winHandler.stop();
-        if (environment != null) environment.stopEnvironmentComponents();
-        ForegroundService.stopSession(this);
+        try {
+            if (preloaderDialog != null) preloaderDialog.close();
+            WinlatorProSuite.stopWatchdog();
+            winHandler.stop();
+            if (environment != null) environment.stopEnvironmentComponents();
+            ForegroundService.stopSession(this);
+        } catch (Throwable ignored) {}
         super.onDestroy();
     }
 
@@ -430,18 +446,26 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
     }
 
     private void exit() {
-        winHandler.stop();
-        if (environment != null) environment.stopEnvironmentComponents();
+        if (!isExiting.compareAndSet(false, true)) return;
+        runOnUiThread(() -> {
+            try {
+                if (preloaderDialog != null) preloaderDialog.close();
+                WinlatorProSuite.stopWatchdog();
+                ForegroundService.stopSession(this);
+                if (xServerView != null) xServerView.onPause();
+                winHandler.stop();
+                if (environment != null) environment.stopEnvironmentComponents();
+            } catch (Throwable ignored) {}
 
-        Intent intent = getIntent();
-        if (intent.hasExtra("exec_path")) {
-            AppUtils.RestartApplicationOptions options = new AppUtils.RestartApplicationOptions();
-            options.containerId = container.id;
-            options.startPath = FileUtils.getDirname(intent.getStringExtra("exec_path"));
-            AppUtils.restartApplication(this, options);
-        }
-        else AppUtils.restartApplication(this);
-        ForegroundService.stopSession(this);
+            Intent intent = getIntent();
+            if (intent != null && intent.hasExtra("exec_path") && container != null) {
+                AppUtils.RestartApplicationOptions options = new AppUtils.RestartApplicationOptions();
+                options.containerId = container.id;
+                options.startPath = FileUtils.getDirname(intent.getStringExtra("exec_path"));
+                AppUtils.restartApplication(this, options);
+            }
+            else AppUtils.restartApplication(this);
+        });
     }
 
     private void setupWineSystemFiles() {
@@ -474,6 +498,19 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
         }
 
         WineStartMenuCreator.create(this, container);
+        File targetExecFile = null;
+        Intent launchIntent = getIntent();
+        if (launchIntent != null && launchIntent.hasExtra("exec_path")) {
+            String rawExec = launchIntent.getStringExtra("exec_path");
+            if (rawExec != null && !rawExec.isEmpty()) targetExecFile = new File(rawExec);
+        } else if (shortcut != null && shortcut.path != null && !shortcut.path.isEmpty()) {
+            String uPath = WineUtils.dosToUnixPath(shortcut.path, container);
+            if (uPath != null && !uPath.isEmpty()) targetExecFile = new File(uPath);
+        }
+        String extraWinePath = WinlatorProSuite.prepareGameFolderAndDependencies(this, container, targetExecFile);
+        if (extraWinePath != null && !extraWinePath.isEmpty()) {
+            envVars.put("WINEPATH", extraWinePath);
+        }
         WineUtils.createDosdevicesSymlinks(container, true);
         WinlatorProSuite.syncInstalledExeToDesktopWithIcons(this, container);
 
@@ -574,6 +611,13 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
         environment.startEnvironmentComponents();
 
         winHandler.start();
+        if (pendingExecCommand != null && !pendingExecCommand.isEmpty()) {
+            final String cmdToRun = pendingExecCommand;
+            final String argsToRun = pendingExecArgs != null ? pendingExecArgs : "";
+            pendingExecCommand = null;
+            pendingExecArgs = "";
+            winHandler.exec(cmdToRun, argsToRun);
+        }
         envVars.clear();
         graphicsDriver = null;
         dxwrapperConfig = null;
@@ -969,13 +1013,20 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
         String cmdArgs = "";
         String execPath = null;
         String execArgs = "";
+        pendingExecCommand = null;
+        pendingExecArgs = "";
 
         if (shortcut != null) {
             execArgs = shortcut.getExtra("execArgs");
             execArgs = !execArgs.isEmpty() ? " "+execArgs : "";
 
             if (shortcut.isLinkPath()) {
-                cmdArgs = "\""+shortcut.path+"\""+execArgs;
+                pendingExecCommand = "\""+shortcut.path+"\"";
+                pendingExecArgs = execArgs.trim();
+                String linkDir = FileUtils.getDirname(shortcut.path);
+                if (linkDir != null && !linkDir.isEmpty() && linkDir.contains(":")) {
+                    cmdArgs = "/dir " + StringUtils.escapeDOSPath(linkDir) + " \"wfm.exe\"";
+                }
             }
             else execPath = shortcut.path;
         }
@@ -985,13 +1036,23 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
                 execPath = WineUtils.unixToDOSPath(intent.getStringExtra("exec_path"), container);
 
                 if (execPath.endsWith(".lnk")) {
-                    cmdArgs = "\""+execPath+"\"";
-                    execPath = null;
+                    File lnkUnix = new File(intent.getStringExtra("exec_path"));
+                    com.winlator.win32.MSLink.LinkInfo linkInfo = com.winlator.win32.MSLink.extractLinkInfo(lnkUnix);
+                    if (linkInfo != null && linkInfo.targetPath != null && !linkInfo.targetPath.isEmpty()) {
+                        execPath = linkInfo.targetPath;
+                        if (linkInfo.arguments != null && !linkInfo.arguments.isEmpty()) {
+                            execArgs = " " + linkInfo.arguments;
+                        }
+                    } else {
+                        pendingExecCommand = "\""+execPath+"\"";
+                        pendingExecArgs = "";
+                        execPath = null;
+                    }
                 }
             }
         }
 
-        if (execPath != null) {
+        if (execPath != null && !execPath.isEmpty() && !execPath.equals("\\")) {
             String execDir = FileUtils.getDirname(execPath);
             String filename = FileUtils.getName(execPath);
             int dotIndex, spaceIndex;
@@ -999,7 +1060,24 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
                 execArgs = filename.substring(spaceIndex+1)+execArgs;
                 filename = filename.substring(0, spaceIndex);
             }
-            cmdArgs = "/dir "+StringUtils.escapeDOSPath(execDir)+" \""+filename+"\""+execArgs;
+            if (execDir == null || execDir.isEmpty() || !execDir.contains(":")) {
+                execDir = "C:\\windows";
+            }
+            String fullTargetDos = execDir + (execDir.endsWith("\\") ? "" : "\\") + filename;
+            String lowerFile = filename.toLowerCase(java.util.Locale.ENGLISH);
+            if (lowerFile.endsWith(".msi")) {
+                pendingExecCommand = "C:\\windows\\system32\\msiexec.exe";
+                pendingExecArgs = "/i \"" + fullTargetDos + "\"" + execArgs;
+            } else if (lowerFile.endsWith(".bat") || lowerFile.endsWith(".cmd")) {
+                pendingExecCommand = "C:\\windows\\system32\\cmd.exe";
+                pendingExecArgs = "/c \"" + fullTargetDos + "\"" + execArgs;
+            } else {
+                pendingExecCommand = "\"" + fullTargetDos + "\"";
+                pendingExecArgs = execArgs.trim();
+            }
+            // Запускаем wfm.exe с рабочей директорией самой игры (execDir), чтобы Рабочий стол Windows
+            // не закрывался и не вылетал при выходе из игры или установщика внутри Рабочего стола!
+            cmdArgs = "/dir "+StringUtils.escapeDOSPath(execDir)+" \"wfm.exe\"";
         }
 
         if (cmdArgs.isEmpty()) cmdArgs = "/dir C:\\windows \"wfm.exe\"";

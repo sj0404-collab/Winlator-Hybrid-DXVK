@@ -276,23 +276,74 @@ public abstract class FileUtils {
     }
 
     public static String getFilePathFromUri(Uri uri) {
-        if (uri == null || uri.getAuthority() == null) return null;
+        if (uri == null) return null;
+        if ("file".equalsIgnoreCase(uri.getScheme())) {
+            return uri.getPath();
+        }
+        String authority = uri.getAuthority();
+        if (authority == null) return null;
         String path = null;
-        if (uri.getAuthority().equals("com.android.externalstorage.documents")) {
-            String lastSegment = uri.getLastPathSegment();
+        String lastSegment = uri.getLastPathSegment();
+        if (lastSegment != null && lastSegment.startsWith("raw:")) {
+            return lastSegment.substring(4);
+        }
+        if (authority.equals("com.android.externalstorage.documents")) {
             if (lastSegment != null) {
                 if (lastSegment.startsWith("tree:")) lastSegment = lastSegment.substring(5);
-                String[] parts = lastSegment.split(":", 2);
-                String tail = parts.length > 1 && !parts[1].isEmpty() ? "/" + parts[1] : "";
-                if (parts[0].equalsIgnoreCase("primary")) {
-                    path = Environment.getExternalStorageDirectory() + tail;
-                }
-                else {
-                    path = "/storage/" + parts[0] + tail;
+                if (lastSegment.contains(":")) {
+                    String[] parts = lastSegment.split(":", 2);
+                    String vol = parts[0];
+                    if (vol.contains("/")) vol = vol.substring(vol.lastIndexOf('/') + 1);
+                    String tail = parts.length > 1 && !parts[1].isEmpty() ? "/" + parts[1] : "";
+                    if (vol.equalsIgnoreCase("primary") || vol.equalsIgnoreCase("home")) {
+                        path = Environment.getExternalStorageDirectory() + (vol.equalsIgnoreCase("home") ? "/Documents" + tail : tail);
+                    }
+                    else {
+                        path = "/storage/" + vol + tail;
+                    }
                 }
             }
         }
         return path;
+    }
+
+    public static File findExistingFileOnStorage(String displayName, long expectedSize) {
+        if (displayName == null || displayName.isEmpty()) return null;
+        File extRoot = Environment.getExternalStorageDirectory();
+        File[] priorityDirs = new File[]{
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+            new File(extRoot, "Games"),
+            new File(extRoot, "GOG Games"),
+            new File(extRoot, "Winlator"),
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS),
+            extRoot
+        };
+        for (File dir : priorityDirs) {
+            File found = searchFileInDir(dir, displayName, expectedSize, 0, 4);
+            if (found != null) return found;
+        }
+        return null;
+    }
+
+    private static File searchFileInDir(File dir, String targetName, long expectedSize, int depth, int maxDepth) {
+        if (dir == null || !dir.isDirectory() || depth > maxDepth) return null;
+        File direct = new File(dir, targetName);
+        if (direct.isFile() && (expectedSize <= 0 || direct.length() == expectedSize)) {
+            return direct;
+        }
+        File[] children = dir.listFiles();
+        if (children == null) return null;
+        for (File f : children) {
+            if (f.isDirectory()) {
+                String n = f.getName();
+                if (n.startsWith(".") || n.equalsIgnoreCase("Android") || n.equalsIgnoreCase("DCIM") || n.equalsIgnoreCase("Pictures")) continue;
+                File sub = searchFileInDir(f, targetName, expectedSize, depth + 1, maxDepth);
+                if (sub != null) return sub;
+            } else if (f.getName().equalsIgnoreCase(targetName) && (expectedSize <= 0 || f.length() == expectedSize)) {
+                return f;
+            }
+        }
+        return null;
     }
 
     public static String getUriDisplayName(Context context, Uri uri) {
@@ -323,15 +374,35 @@ public abstract class FileUtils {
         String path = getFilePathFromUri(uri);
         if (path != null) {
             File direct = new File(path);
-            if (direct.isFile() && direct.canRead()) {
-                try (InputStream testIn = new FileInputStream(direct)) {
-                    testIn.read();
-                    return direct;
-                }
-                catch (IOException ignored) {}
-            }
+            if (direct.exists()) return direct;
         }
-        String displayName = StringUtils.clearReservedChars(getUriDisplayName(context, uri));
+        long expectedSize = -1;
+        String displayName = null;
+        try (android.database.Cursor cursor = context.getContentResolver().query(uri, null, null, null, null)) {
+            if (cursor != null && cursor.moveToFirst()) {
+                int dataIdx = cursor.getColumnIndex("_data");
+                if (dataIdx >= 0) {
+                    String dataPath = cursor.getString(dataIdx);
+                    if (dataPath != null && !dataPath.isEmpty()) {
+                        File f = new File(dataPath);
+                        if (f.exists()) return f;
+                    }
+                }
+                int nameIdx = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME);
+                if (nameIdx >= 0) displayName = cursor.getString(nameIdx);
+                int sizeIdx = cursor.getColumnIndex(android.provider.OpenableColumns.SIZE);
+                if (sizeIdx >= 0 && !cursor.isNull(sizeIdx)) expectedSize = cursor.getLong(sizeIdx);
+            }
+        } catch (Exception ignored) {}
+
+        if (displayName == null || displayName.isEmpty()) {
+            displayName = StringUtils.clearReservedChars(getUriDisplayName(context, uri));
+        }
+        File existingInFolder = findExistingFileOnStorage(displayName, expectedSize);
+        if (existingInFolder != null && existingInFolder.isFile()) {
+            return existingInFolder;
+        }
+
         if (displayName.isEmpty()) displayName = "imported_file.bin";
         File cacheDir = new File(context.getCacheDir(), "uri_imports");
         if (!cacheDir.isDirectory()) cacheDir.mkdirs();

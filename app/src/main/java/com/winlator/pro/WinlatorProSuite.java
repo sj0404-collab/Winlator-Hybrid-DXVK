@@ -12,7 +12,7 @@ import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
-import android.opengl.GLSurfaceView;
+import android.net.Uri;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
@@ -21,6 +21,7 @@ import android.text.Editable;
 import android.text.TextWatcher;
 import android.util.TypedValue;
 import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.AdapterView;
@@ -45,10 +46,11 @@ import com.winlator.XServerDisplayActivity;
 import com.winlator.container.Container;
 import com.winlator.container.ContainerManager;
 import com.winlator.core.AppUtils;
-import com.winlator.core.EnvVars;
 import com.winlator.core.FileUtils;
 import com.winlator.core.KeyValueSet;
 import com.winlator.core.StringUtils;
+import com.winlator.core.TarCompressorUtils;
+import com.winlator.core.WineRegistryEditor;
 import com.winlator.core.WineUtils;
 import com.winlator.inputcontrols.Binding;
 import com.winlator.inputcontrols.ControlElement;
@@ -61,33 +63,69 @@ import com.winlator.renderer.effects.ColorEffect;
 import com.winlator.renderer.effects.FXAAEffect;
 import com.winlator.renderer.effects.HDRBloomEffect;
 import com.winlator.renderer.effects.NightVisionEffect;
-import com.winlator.widget.FrameRating;
 import com.winlator.widget.InputControlsView;
 import com.winlator.widget.TouchpadView;
 import com.winlator.win32.MSLink;
 import com.winlator.win32.PEParser;
 import com.winlator.winhandler.TaskManagerDialog;
+import com.winlator.xenvironment.RootFS;
 import com.winlator.xserver.Window;
+import com.winlator.xserver.XLock;
 import com.winlator.xserver.XServer;
 
-import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileOutputStream;
-import java.io.InputStreamReader;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.Executors;
 
-import javax.microedition.khronos.egl.EGLConfig;
-import javax.microedition.khronos.opengles.GL10;
-
 public class WinlatorProSuite {
+
+    public static final String CAT_ALL = "ALL";
+    public static final String CAT_GAME = "GAME";
+    public static final String CAT_PROGRAM = "PROGRAM";
+    public static final String CAT_SYSTEM = "SYSTEM";
+
+    private static volatile boolean crashGuardInstalled = false;
+    private static volatile Handler activeWatchdogHandler = null;
+
+    /**
+     * Защищает приложение от случайных падений фоновых потоков (иконки, сокеты, файловый сканер),
+     * чтобы Android не показывал окно «Winlator Hybrid DXVK остановлено».
+     */
+    public static void installGlobalCrashGuard() {
+        if (crashGuardInstalled) return;
+        crashGuardInstalled = true;
+        final Thread.UncaughtExceptionHandler defaultHandler = Thread.getDefaultUncaughtExceptionHandler();
+        Thread.setDefaultUncaughtExceptionHandler((thread, throwable) -> {
+            try {
+                if (thread != Looper.getMainLooper().getThread()) {
+                    // Фоновый поток — игнорируем нефатальную ошибку вместо убийства процесса
+                    return;
+                }
+            } catch (Throwable ignored) {}
+            if (defaultHandler != null) {
+                defaultHandler.uncaughtException(thread, throwable);
+            }
+        });
+    }
+
+    public static void stopWatchdog() {
+        Handler h = activeWatchdogHandler;
+        activeWatchdogHandler = null;
+        if (h != null) {
+            try {
+                h.removeCallbacksAndMessages(null);
+            } catch (Throwable ignored) {}
+        }
+    }
 
     public static class MemoryStatus {
         public final long freeStorageBytes;
@@ -102,18 +140,18 @@ public class WinlatorProSuite {
             this.totalStorageBytes = totalStorageBytes;
             this.freeRamBytes = freeRamBytes;
             this.totalRamBytes = totalRamBytes;
-            this.isLowStorage = freeStorageBytes < (4L * 1024L * 1024L * 1024L); // < 4 GB
-            this.isLowRam = freeRamBytes < (1400L * 1024L * 1024L); // < 1.4 GB
+            this.isLowStorage = freeStorageBytes < (2500L * 1024L * 1024L); // < 2.5 GB
+            this.isLowRam = freeRamBytes < (1200L * 1024L * 1024L); // < 1.2 GB
         }
 
         public String formatStorageGb() {
-            return String.format(Locale.US, "%.2f ГБ свободно из %.1f ГБ",
+            return String.format(Locale.US, "%.2f/%.0f ГБ",
                 freeStorageBytes / (1024.0 * 1024.0 * 1024.0),
                 totalStorageBytes / (1024.0 * 1024.0 * 1024.0));
         }
 
         public String formatRamMb() {
-            return String.format(Locale.US, "%d МБ свободно из %d МБ",
+            return String.format(Locale.US, "%d/%d МБ",
                 freeRamBytes / (1024L * 1024L),
                 totalRamBytes / (1024L * 1024L));
         }
@@ -122,17 +160,30 @@ public class WinlatorProSuite {
     public static class DiscoveredProgram {
         public final File file;
         public final String name;
-        public final String category;
+        public final String categoryCode; // CAT_GAME, CAT_PROGRAM, CAT_SYSTEM
+        public final String categoryLabel;
         public final String dosPath;
+        public final String workingDosDir;
         public final long sizeBytes;
-        public final boolean isOnDesktop;
+        public boolean isOnDesktop;
         public Bitmap iconBitmap;
 
-        public DiscoveredProgram(File file, String name, String category, String dosPath, long sizeBytes, boolean isOnDesktop) {
+        public DiscoveredProgram(
+            File file,
+            String name,
+            String categoryCode,
+            String categoryLabel,
+            String dosPath,
+            String workingDosDir,
+            long sizeBytes,
+            boolean isOnDesktop
+        ) {
             this.file = file;
             this.name = name;
-            this.category = category;
+            this.categoryCode = categoryCode;
+            this.categoryLabel = categoryLabel;
             this.dosPath = dosPath;
+            this.workingDosDir = workingDosDir;
             this.sizeBytes = sizeBytes;
             this.isOnDesktop = isOnDesktop;
         }
@@ -145,21 +196,19 @@ public class WinlatorProSuite {
             StatFs statFs = new StatFs(Environment.getDataDirectory().getAbsolutePath());
             freeStorage = statFs.getAvailableBytes();
             totalStorage = statFs.getTotalBytes();
-        } catch (Exception ignored) {
-        }
+        } catch (Throwable ignored) {}
 
         long freeRam = 0L;
         long totalRam = 0L;
         try {
-            ActivityManager am = (ActivityManager) context.getSystemService(Context.CLIPBOARD_SERVICE != null ? Context.ACTIVITY_SERVICE : Context.ACTIVITY_SERVICE);
+            ActivityManager am = (ActivityManager) context.getSystemService(Context.ACTIVITY_SERVICE);
             if (am != null) {
                 ActivityManager.MemoryInfo mi = new ActivityManager.MemoryInfo();
                 am.getMemoryInfo(mi);
                 freeRam = mi.availMem;
                 totalRam = mi.totalMem;
             }
-        } catch (Exception ignored) {
-        }
+        } catch (Throwable ignored) {}
         return new MemoryStatus(freeStorage, totalStorage, freeRam, totalRam);
     }
 
@@ -182,109 +231,209 @@ public class WinlatorProSuite {
         btn.setText(text);
         btn.setAllCaps(false);
         btn.setTextColor(Color.WHITE);
-        btn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        btn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f);
         btn.setTypeface(Typeface.DEFAULT_BOLD);
-        btn.setPadding(dp(ctx, 12), dp(ctx, 6), dp(ctx, 12), dp(ctx, 6));
+        btn.setMinHeight(dp(ctx, 34));
+        btn.setMinimumHeight(dp(ctx, 34));
+        btn.setPadding(dp(ctx, 10), dp(ctx, 5), dp(ctx, 10), dp(ctx, 5));
         btn.setBackground(roundedBg(bgColor, strokeColor, 1, 8, ctx));
         return btn;
     }
 
     /**
-     * Верхняя панель в Проводнике / Контейнерах / Ярлыках:
-     * 1) Показывает сколько памяти и ОЗУ свободно на телефоне (предупреждает если мало памяти)
-     * 2) Кнопка «🎮 Лаунчер Всех Игр и Программ (.EXE / .MSI)»
-     * 3) Кнопка «🖥️ Открыть Рабочий Стол Windows (с иконками)»
-     * 4) Кнопка «🎨 Графика / FPS / Скорость + Шейдеры»
-     * 5) Кнопка «📊 Проверка FPS (Vulkan / OpenGL / DXVK)»
+     * Делает любую View (HUD или панель оверлея) перетаскиваемой пальцем в любое место экрана!
+     */
+    private static void makeViewDraggable(final View targetView, final View dragHandleView, final View parentContainer) {
+        dragHandleView.setOnTouchListener(new View.OnTouchListener() {
+            private float dX, dY;
+            private float downRawX, downRawY;
+            private boolean dragging = false;
+
+            @Override
+            public boolean onTouch(View v, MotionEvent event) {
+                ViewGroup.LayoutParams rawLp = targetView.getLayoutParams();
+                if (!(rawLp instanceof FrameLayout.LayoutParams)) return false;
+                FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) rawLp;
+
+                switch (event.getActionMasked()) {
+                    case MotionEvent.ACTION_DOWN:
+                        if ((lp.gravity & Gravity.CENTER_HORIZONTAL) != 0 || (lp.gravity & Gravity.BOTTOM) != 0 || (lp.gravity & Gravity.END) != 0) {
+                            int curLeft = targetView.getLeft();
+                            int curTop = targetView.getTop();
+                            lp.gravity = Gravity.TOP | Gravity.START;
+                            lp.leftMargin = Math.max(0, curLeft);
+                            lp.topMargin = Math.max(0, curTop);
+                            lp.rightMargin = 0;
+                            lp.bottomMargin = 0;
+                            targetView.setLayoutParams(lp);
+                        }
+                        dX = lp.leftMargin - event.getRawX();
+                        dY = lp.topMargin - event.getRawY();
+                        downRawX = event.getRawX();
+                        downRawY = event.getRawY();
+                        dragging = false;
+                        return true;
+
+                    case MotionEvent.ACTION_MOVE:
+                        float moveX = Math.abs(event.getRawX() - downRawX);
+                        float moveY = Math.abs(event.getRawY() - downRawY);
+                        if (moveX > 8f || moveY > 8f) {
+                            dragging = true;
+                        }
+                        if (dragging) {
+                            int maxW = parentContainer != null && parentContainer.getWidth() > 0
+                                ? Math.max(0, parentContainer.getWidth() - targetView.getWidth())
+                                : 2000;
+                            int maxH = parentContainer != null && parentContainer.getHeight() > 0
+                                ? Math.max(0, parentContainer.getHeight() - targetView.getHeight())
+                                : 2000;
+                            lp.leftMargin = Math.max(0, Math.min(maxW, Math.round(event.getRawX() + dX)));
+                            lp.topMargin = Math.max(0, Math.min(maxH, Math.round(event.getRawY() + dY)));
+                            targetView.setLayoutParams(lp);
+                        }
+                        return true;
+
+                    case MotionEvent.ACTION_UP:
+                        if (!dragging) {
+                            v.performClick();
+                        }
+                        return true;
+                }
+                return false;
+            }
+        });
+    }
+
+    /**
+     * Единственная компактная разноцветная панель в главном окне Контейнеров (без дубликатов и
+     * без лишней кнопки «Открыть Рабочий Стол Windows», так как у контейнера уже есть кнопка запуска ▶️).
+     * Можно свернуть в одну тонкую полоску кнопкой [▲/▼].
      */
     public static View buildTopProDashboardBar(final Activity activity, final Container container, final Runnable onRefreshCallback) {
         final Context ctx = activity;
+        final SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(ctx);
+
         LinearLayout root = new LinearLayout(ctx);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(ctx, 10), dp(ctx, 8), dp(ctx, 10), dp(ctx, 8));
+        root.setPadding(dp(ctx, 8), dp(ctx, 5), dp(ctx, 8), dp(ctx, 5));
         root.setBackground(roundedBg(0xFF0F172A, 0xFF38BDF8, 1, 10, ctx));
         LinearLayout.LayoutParams rootLp = new LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.WRAP_CONTENT
         );
-        rootLp.setMargins(dp(ctx, 8), dp(ctx, 6), dp(ctx, 8), dp(ctx, 6));
+        rootLp.setMargins(dp(ctx, 8), dp(ctx, 4), dp(ctx, 8), dp(ctx, 4));
         root.setLayoutParams(rootLp);
+
+        LinearLayout topHeaderRow = new LinearLayout(ctx);
+        topHeaderRow.setOrientation(LinearLayout.HORIZONTAL);
+        topHeaderRow.setGravity(Gravity.CENTER_VERTICAL);
 
         MemoryStatus mem = queryMemoryStatus(ctx);
         TextView tvMem = new TextView(ctx);
         boolean warn = mem.isLowStorage || mem.isLowRam;
-        String prefix = warn ? "⚠️ ВНИМАНИЕ — МАЛО ПАМЯТИ: " : "💾 Память телефона: ";
-        tvMem.setText(prefix + mem.formatStorageGb() + "  |  🧠 ОЗУ: " + mem.formatRamMb());
+        tvMem.setText((warn ? "⚠️ " : "💾 ") + "Память: " + mem.formatStorageGb() + " | 🧠 ОЗУ: " + mem.formatRamMb());
         tvMem.setTextColor(warn ? 0xFFFACC15 : 0xFF34D399);
-        tvMem.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f);
+        tvMem.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f);
         tvMem.setTypeface(Typeface.DEFAULT_BOLD);
-        root.addView(tvMem);
+        topHeaderRow.addView(tvMem, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
-        TextView tvHint = new TextView(ctx);
-        tvHint.setText("✓ При установке и запуске любых .exe/.msi из проводника Рабочий стол Windows ВСЕГДА виден + работает детектор зависаний и авто-иконки!");
-        tvHint.setTextColor(0xFF94A3B8);
-        tvHint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f);
-        tvHint.setPadding(0, dp(ctx, 2), 0, dp(ctx, 6));
-        root.addView(tvHint);
-
-        HorizontalScrollView hsv = new HorizontalScrollView(ctx);
+        final HorizontalScrollView hsv = new HorizontalScrollView(ctx);
         hsv.setHorizontalScrollBarEnabled(false);
+
+        final boolean initialCollapsed = prefs.getBoolean("pro_top_bar_collapsed", false);
+        hsv.setVisibility(initialCollapsed ? View.GONE : View.VISIBLE);
+
+        final Button btnToggleBar = createStyledButton(ctx, initialCollapsed ? "▼ Панель" : "▲ Скрыть", 0xFF1E293B, 0xFF475569);
+        btnToggleBar.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f);
+        btnToggleBar.setMinHeight(dp(ctx, 24));
+        btnToggleBar.setMinimumHeight(dp(ctx, 24));
+        btnToggleBar.setPadding(dp(ctx, 8), dp(ctx, 2), dp(ctx, 8), dp(ctx, 2));
+        btnToggleBar.setOnClickListener(v -> {
+            boolean nowVisible = hsv.getVisibility() != View.VISIBLE;
+            hsv.setVisibility(nowVisible ? View.VISIBLE : View.GONE);
+            btnToggleBar.setText(nowVisible ? "▲ Скрыть" : "▼ Панель");
+            prefs.edit().putBoolean("pro_top_bar_collapsed", !nowVisible).apply();
+        });
+        topHeaderRow.addView(btnToggleBar, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        root.addView(topHeaderRow);
+
         LinearLayout row = new LinearLayout(ctx);
         row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setPadding(0, dp(ctx, 5), 0, 0);
 
-        Button btnLauncher = createStyledButton(ctx, "🎮 Лаунчер Всех Игр и Программ (.EXE/.MSI)", 0xFF0284C7, 0xFF38BDF8);
+        // 1. Универсальный Лаунчер (Игры / Программы / Система)
+        Button btnLauncher = createStyledButton(ctx, "🎮 Лаунчер (Игра / Программа / Система)", 0xFF0284C7, 0xFF38BDF8);
         btnLauncher.setOnClickListener(v -> {
-            Container target = resolveTargetContainer(activity, container);
-            if (target != null) {
-                showUniversalExeLauncherDialog(activity, target, onRefreshCallback);
-            }
+            Executors.newSingleThreadExecutor().execute(() -> {
+                final Container target = resolveTargetContainer(activity, container);
+                activity.runOnUiThread(() -> {
+                    if (target != null) {
+                        showUniversalExeLauncherDialog(activity, target, onRefreshCallback);
+                    }
+                });
+            });
         });
-        row.addView(btnLauncher, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(ctx, 36)) {{
+        row.addView(btnLauncher, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT) {{
             rightMargin = dp(ctx, 6);
         }});
 
-        Button btnDesktop = createStyledButton(ctx, "🖥️ Открыть Рабочий Стол Windows", 0xFF059669, 0xFF34D399);
-        btnDesktop.setOnClickListener(v -> {
-            Container target = resolveTargetContainer(activity, container);
-            if (target != null) {
-                syncInstalledExeToDesktopWithIcons(activity, target);
-                launchWithMemoryCheck(activity, target, null);
-            }
+        // 2. Открыть папку с игрой целиком
+        Button btnPickFolder = createStyledButton(ctx, "📁 Открыть папку с игрой", 0xFF059669, 0xFF34D399);
+        btnPickFolder.setOnClickListener(v -> {
+            Executors.newSingleThreadExecutor().execute(() -> {
+                final Container target = resolveTargetContainer(activity, container);
+                activity.runOnUiThread(() -> {
+                    if (target != null) {
+                        promptPickWholeGameFolder(activity, target, onRefreshCallback);
+                    }
+                });
+            });
         });
-        row.addView(btnDesktop, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(ctx, 36)) {{
+        row.addView(btnPickFolder, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT) {{
             rightMargin = dp(ctx, 6);
         }});
 
-        Button btnGraphics = createStyledButton(ctx, "🎨 Графика / FPS / Скорость + Шейдеры", 0xFF7C3AED, 0xFFA78BFA);
+        // 3. Графика / FPS / Скорость + Шейдеры
+        Button btnGraphics = createStyledButton(ctx, "🎨 Графика / FPS / Шейдеры", 0xFF7C3AED, 0xFFA78BFA);
         btnGraphics.setOnClickListener(v -> {
-            Container target = resolveTargetContainer(activity, container);
-            if (target != null) {
-                showGraphicsFpsShaderStudioDialog(activity, target, null);
-            }
+            Executors.newSingleThreadExecutor().execute(() -> {
+                final Container target = resolveTargetContainer(activity, container);
+                activity.runOnUiThread(() -> {
+                    if (target != null) {
+                        showGraphicsFpsShaderStudioDialog(activity, target, null);
+                    }
+                });
+            });
         });
-        row.addView(btnGraphics, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(ctx, 36)) {{
+        row.addView(btnGraphics, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT) {{
             rightMargin = dp(ctx, 6);
         }});
 
-        Button btnBenchmark = createStyledButton(ctx, "📊 Тест FPS (Vulkan / OpenGL / DXVK)", 0xFFD97706, 0xFFFBBF24);
+        // 4. Тест FPS (Vulkan / OpenGL / DXVK)
+        Button btnBenchmark = createStyledButton(ctx, "📊 Тест FPS", 0xFFD97706, 0xFFFBBF24);
         btnBenchmark.setOnClickListener(v -> {
-            Container target = resolveTargetContainer(activity, container);
+            Container target = (container != null) ? container : (new ContainerManager(activity)).getDefaultOrFirstContainer();
             showFpsBenchmarkDialog(activity, target);
         });
-        row.addView(btnBenchmark, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(ctx, 36)) {{
+        row.addView(btnBenchmark, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT) {{
             rightMargin = dp(ctx, 6);
         }});
 
-        Button btnSyncIcons = createStyledButton(ctx, "📌 Обновить иконки на Рабочем столе", 0xFF1E293B, 0xFF64748B);
+        // 5. Обновить ярлыки на Рабочем столе
+        Button btnSyncIcons = createStyledButton(ctx, "📌 Ярлыки на Рабочий стол", 0xFF1E293B, 0xFF64748B);
         btnSyncIcons.setOnClickListener(v -> {
-            Container target = resolveTargetContainer(activity, container);
-            if (target != null) {
-                int count = syncInstalledExeToDesktopWithIcons(activity, target);
-                AppUtils.showToast(activity, "📌 На Рабочий стол добавлено / обновлено ярлыков с иконками: " + count);
-                if (onRefreshCallback != null) onRefreshCallback.run();
-            }
+            Executors.newSingleThreadExecutor().execute(() -> {
+                final Container target = resolveTargetContainer(activity, container);
+                if (target != null) {
+                    final int count = syncInstalledExeToDesktopWithIcons(activity, target);
+                    activity.runOnUiThread(() -> {
+                        AppUtils.showToast(activity, "📌 На Рабочий стол вынесено ярлыков с иконками: " + count);
+                        if (onRefreshCallback != null) onRefreshCallback.run();
+                    });
+                }
+            });
         });
-        row.addView(btnSyncIcons, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(ctx, 36)));
+        row.addView(btnSyncIcons, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         hsv.addView(row);
         root.addView(hsv);
@@ -294,110 +443,40 @@ public class WinlatorProSuite {
     private static Container resolveTargetContainer(Context context, Container preferred) {
         if (preferred != null) return preferred;
         ContainerManager cm = new ContainerManager(context);
+        Container existing = cm.getDefaultOrFirstContainer();
+        if (existing != null) return existing;
         return cm.ensureDefaultHybridContainer();
     }
 
     /**
-     * Проверяет свободную память и ОЗУ перед запуском или установкой файла (.exe / .msi)
-     * и запускает XServerDisplayActivity с ВКЛЮЧЕННЫМ видимым Рабочим Столом Windows!
+     * Запускает контейнер или выбранный .exe / .msi файл БЕЗ гигантского дублирующего окна уведомления!
+     * Автоматически находит родную папку игры со всеми её данными (UnityPlayer.dll, *_Data, DirectX, vc15),
+     * создаёт рабочий ярлык на Рабочем столе и запускает приложение прямо из его папки!
      */
     public static void launchWithMemoryCheck(final Activity activity, final Container container, final String execPathOrNull) {
-        if (container == null) return;
-        final MemoryStatus mem = queryMemoryStatus(activity);
-        final File exeFile = (execPathOrNull != null && !execPathOrNull.isEmpty()) ? new File(execPathOrNull) : null;
-        final long exeSize = (exeFile != null && exeFile.isFile()) ? exeFile.length() : 0L;
+        if (activity == null || container == null) return;
 
-        // Автоматически создаём ярлык с иконкой на Рабочем столе для запускаемого/устанавливаемого .exe
-        if (exeFile != null && exeFile.isFile()) {
-            pinExecutableToDesktopWithIcon(activity, container, exeFile);
-        }
-        syncInstalledExeToDesktopWithIcons(activity, container);
+        Executors.newSingleThreadExecutor().execute(() -> {
+            String resolvedPath = execPathOrNull;
+            if (resolvedPath != null && !resolvedPath.isEmpty()) {
+                File f = resolveFullFolderExeIfOrphan(new File(resolvedPath));
+                resolvedPath = f.getAbsolutePath();
+                prepareGameFolderAndDependencies(activity, container, f);
+                pinExecutableToDesktopWithIcon(activity, container, f);
+            } else {
+                prepareGameFolderAndDependencies(activity, container, null);
+                syncInstalledExeToDesktopWithIcons(activity, container);
+            }
 
-        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(activity);
-        boolean alwaysAskBeforeLaunch = prefs.getBoolean("pro_show_memory_check_before_launch", true);
-        boolean lowSpaceForInstall = mem.isLowStorage || mem.isLowRam || (exeSize > 0 && mem.freeStorageBytes < exeSize * 2L);
-
-        if (!lowSpaceForInstall && !alwaysAskBeforeLaunch) {
-            startDesktopActivityNow(activity, container, execPathOrNull);
-            return;
-        }
-
-        LinearLayout layout = new LinearLayout(activity);
-        layout.setOrientation(LinearLayout.VERTICAL);
-        layout.setPadding(dp(activity, 16), dp(activity, 14), dp(activity, 16), dp(activity, 10));
-        layout.setBackgroundColor(0xFF0F172A);
-
-        TextView title = new TextView(activity);
-        title.setText(lowSpaceForInstall
-            ? "⚠️ ВНИМАНИЕ: МАЛО ПАМЯТИ НА ТЕЛЕФОНЕ ПЕРЕД ЗАПУСКОМ / УСТАНОВКОЙ!"
-            : "💾 Проверка памяти и параметров перед открытием на Рабочем столе");
-        title.setTextColor(lowSpaceForInstall ? 0xFFF87171 : 0xFF38BDF8);
-        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
-        title.setTypeface(Typeface.DEFAULT_BOLD);
-        layout.addView(title);
-
-        TextView details = new TextView(activity);
-        String fileInfo = (exeFile != null)
-            ? ("\n📄 Выбранный файл: " + exeFile.getName() + " (" + StringUtils.formatBytes(exeSize) + ")")
-            : "\n🖥️ Режим: Полный Рабочий Стол Windows с установленными ярлыками и иконками";
-        String warningNote = lowSpaceForInstall
-            ? "\n\n❗ На телефоне осталось мало свободной памяти! Если установщик крупной игры распаковывает файлы, рекомендуем очистить кэш или освободить место, чтобы установка не зависла."
-            : "\n\n✓ Памяти достаточно. Экран Рабочего стола Windows будет ОТКРЫТ и ВИДЕН во время установки и работы программы, а сверху будет работать индикатор активности процесса (защита от скрытого зависания).";
-
-        details.setText(
-            "\n💾 Внутренняя память телефона: " + mem.formatStorageGb() +
-            "\n🧠 Оперативная память (ОЗУ): " + mem.formatRamMb() +
-            fileInfo +
-            "\n🎨 Графика: " + container.getDXWrapper().toUpperCase() + " • Разрешение: " + container.getScreenSize() +
-            warningNote
-        );
-        details.setTextColor(Color.WHITE);
-        details.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f);
-        layout.addView(details);
-
-        final CheckBox cbDontAskWhenEnough = new CheckBox(activity);
-        cbDontAskWhenEnough.setText("Показывать это окно только когда на телефоне мало памяти (< 4 ГБ)");
-        cbDontAskWhenEnough.setTextColor(0xFFCBD5E1);
-        cbDontAskWhenEnough.setChecked(!alwaysAskBeforeLaunch);
-        layout.addView(cbDontAskWhenEnough);
-
-        LinearLayout btnRow = new LinearLayout(activity);
-        btnRow.setOrientation(LinearLayout.HORIZONTAL);
-        btnRow.setPadding(0, dp(activity, 10), 0, 0);
-
-        final AlertDialog dialog = new AlertDialog.Builder(activity)
-            .setView(layout)
-            .create();
-
-        Button btnClean = createStyledButton(activity, "🧹 Очистить кэш / ОЗУ", 0xFF334155, 0xFF64748B);
-        btnClean.setOnClickListener(v -> {
-            try {
-                FileUtils.clear(activity.getCacheDir());
-                System.gc();
-            } catch (Exception ignored) {}
-            MemoryStatus updated = queryMemoryStatus(activity);
-            AppUtils.showToast(activity, "🧹 Кэш очищен! Свободно: " + updated.formatStorageGb() + " | ОЗУ: " + updated.formatRamMb());
+            final String finalExecPath = resolvedPath;
+            final MemoryStatus mem = queryMemoryStatus(activity);
+            activity.runOnUiThread(() -> {
+                if (mem.isLowStorage) {
+                    AppUtils.showToast(activity, "💾 Свободно памяти: " + mem.formatStorageGb() + " • Запуск...");
+                }
+                startDesktopActivityNow(activity, container, finalExecPath);
+            });
         });
-        btnRow.addView(btnClean, new LinearLayout.LayoutParams(0, dp(activity, 40), 1f) {{
-            rightMargin = dp(activity, 6);
-        }});
-
-        Button btnTune = createStyledButton(activity, "🎨 Графика / FPS", 0xFF7C3AED, 0xFFA78BFA);
-        btnTune.setOnClickListener(v -> showGraphicsFpsShaderStudioDialog(activity, container, null));
-        btnRow.addView(btnTune, new LinearLayout.LayoutParams(0, dp(activity, 40), 1f) {{
-            rightMargin = dp(activity, 6);
-        }});
-
-        Button btnGo = createStyledButton(activity, "🚀 Запустить (Рабочий стол)", 0xFF059669, 0xFF34D399);
-        btnGo.setOnClickListener(v -> {
-            prefs.edit().putBoolean("pro_show_memory_check_before_launch", !cbDontAskWhenEnough.isChecked()).apply();
-            dialog.dismiss();
-            startDesktopActivityNow(activity, container, execPathOrNull);
-        });
-        btnRow.addView(btnGo, new LinearLayout.LayoutParams(0, dp(activity, 40), 1.3f));
-
-        layout.addView(btnRow);
-        dialog.show();
     }
 
     private static void startDesktopActivityNow(Activity activity, Container container, String execPathOrNull) {
@@ -411,13 +490,291 @@ public class WinlatorProSuite {
     }
 
     /**
-     * Автоматически создаёт ярлык .desktop и .lnk на Рабочем столе Windows (Users/xuser/Desktop)
-     * вместе с извлечённой из .exe иконкой (PEParser.extractIcon), чтобы все установленные
-     * игры и программы отображались с иконкой прямо на Рабочем столе!
+     * Если .exe ранее был скопирован в одиночку в C:\Games или кэш (например, Souldiers.exe без папки Souldiers_Data),
+     * автоматически находит полный оригинал файла в его родной папке на памяти устройства (/storage/emulated/0/...).
      */
-    public static boolean pinExecutableToDesktopWithIcon(Context context, Container container, File exeFile) {
-        if (container == null || exeFile == null || !exeFile.exists()) return false;
+    public static File resolveFullFolderExeIfOrphan(File exeFile) {
+        if (exeFile == null || !exeFile.exists()) return exeFile;
+        File parent = exeFile.getParentFile();
+        if (parent == null) return exeFile;
+
+        String abs = exeFile.getAbsolutePath();
+        boolean inContainerGamesOrCache = abs.contains("/.wine/drive_c/Games/") || abs.contains("/uri_imports/");
+        String baseName = FileUtils.getBasename(exeFile.getName());
+        boolean missingUnityData = !new File(parent, baseName + "_Data").isDirectory() && !new File(parent, "UnityPlayer.dll").isFile();
+
+        if (inContainerGamesOrCache && missingUnityData) {
+            File realOnStorage = FileUtils.findExistingFileOnStorage(exeFile.getName(), exeFile.length());
+            if (realOnStorage != null && realOnStorage.isFile() && !realOnStorage.getAbsolutePath().equals(abs)) {
+                return realOnStorage;
+            }
+        }
+        return exeFile;
+    }
+
+    /**
+     * Подготавливает папку с игрой / программой целиком, монтирует все диски памяти телефона (D:, E:, F:, G:, H:),
+     * устанавливает/проверяет библиотеки DirectX (d3dx9/10/11, d3dcompiler_47, xinput, xaudio) и VC15 (VC++ 2015–2022:
+     * vcruntime140.dll, vcruntime140_1.dll, msvcp140.dll, concrt140.dll, vcomp140.dll, ucrtbase.dll),
+     * а также находит все .dll и редистрибутивы (_CommonRedist, Redist, DirectX, vc15, *_Data/Plugins, MonoBleedingEdge)
+     * внутри папки с игрой и возвращает строку WINEPATH для их автоматической подгрузки!
+     */
+    public static String prepareGameFolderAndDependencies(Context context, Container container, File targetExeOrNull) {
+        if (context == null || container == null) return "";
         try {
+            // 1. Гарантируем монтирование всей внутренней памяти телефона (/storage/emulated/0 -> G:) и загрузок (D:)
+            String extRoot = Environment.getExternalStorageDirectory().getPath();
+            String drives = container.getDrives();
+            if (drives == null) drives = Container.DEFAULT_DRIVES;
+            boolean drivesChanged = false;
+            if (!drives.contains("D:")) {
+                drives += "D:" + AppUtils.DIRECTORY_DOWNLOADS;
+                drivesChanged = true;
+            }
+            if (!drives.contains("G:")) {
+                drives += "G:" + extRoot;
+                drivesChanged = true;
+            }
+
+            File resolvedExe = targetExeOrNull != null ? resolveFullFolderExeIfOrphan(targetExeOrNull) : null;
+            File gameFolder = (resolvedExe != null && resolvedExe.getParentFile() != null) ? resolvedExe.getParentFile() : null;
+
+            // Если папка игры находится на внешней SD-карте или нестандартном разделе — монтируем её как диск H:
+            if (gameFolder != null && gameFolder.isDirectory()) {
+                String gPath = gameFolder.getAbsolutePath();
+                if (!gPath.startsWith(extRoot) && !gPath.contains("/.wine/drive_c")) {
+                    if (!drives.contains("H:")) {
+                        drives += "H:" + gPath;
+                        drivesChanged = true;
+                    }
+                }
+            }
+
+            // 2. Включаем все компоненты DirectX и Visual C++ в контейнере
+            String fullWinComponents = Container.DEFAULT_WINCOMPONENTS;
+            if (!fullWinComponents.equals(container.getWinComponents())) {
+                container.setWinComponents(fullWinComponents);
+                drivesChanged = true;
+            }
+            if (drivesChanged) {
+                container.setDrives(drives);
+                container.saveData();
+            }
+            WineUtils.createDosdevicesSymlinks(container, true);
+
+            // 3. Проверяем и докопируем в system32 / syswow64 библиотеки DirectX 9/10/11 и VC15 (VC++ 2015–2022)
+            ensureDirectXAndVc15RuntimeDlls(context, container);
+
+            // 4. Сканируем папку самой игры и её подпапки (_CommonRedist, Redist, DirectX, vc15, Plugins, MonoBleedingEdge, bin, x64)
+            if (gameFolder != null && gameFolder.isDirectory()) {
+                Set<String> dllDirsDos = new LinkedHashSet<>();
+                String mainDosDir = WineUtils.unixToDOSPath(gameFolder.getAbsolutePath(), container);
+                if (mainDosDir != null && !mainDosDir.isEmpty() && !mainDosDir.equals("\\")) {
+                    dllDirsDos.add(mainDosDir);
+                }
+                scanGameFolderForRedistsAndDlls(container, gameFolder, gameFolder, 0, 3, dllDirsDos);
+
+                StringBuilder winePathSb = new StringBuilder();
+                for (String d : dllDirsDos) {
+                    if (winePathSb.length() > 0) winePathSb.append(";");
+                    winePathSb.append(d);
+                }
+                return winePathSb.toString();
+            }
+        } catch (Throwable ignored) {}
+        return "";
+    }
+
+    private static void ensureDirectXAndVc15RuntimeDlls(Context context, Container container) {
+        try {
+            File rootDir = RootFS.find(context).getRootDir();
+            File wineX64 = new File(rootDir, "/opt/wine/lib/wine/x86_64-windows");
+            File wineX86 = new File(rootDir, "/opt/wine/lib/wine/i386-windows");
+            File sys32 = new File(container.getRootDir(), ".wine/drive_c/windows/system32");
+            File syswow64 = new File(container.getRootDir(), ".wine/drive_c/windows/syswow64");
+            if (!sys32.isDirectory()) sys32.mkdirs();
+            if (!syswow64.isDirectory()) syswow64.mkdirs();
+
+            // Ключевые библиотеки VC15 (VC++ 2015-2022), VC10-13 и DirectX 9/10/11
+            final String[] criticalDlls = {
+                "vcruntime140.dll", "vcruntime140_1.dll",
+                "msvcp140.dll", "msvcp140_1.dll", "msvcp140_2.dll",
+                "msvcp140_atomic_wait.dll", "msvcp140_codecvt_ids.dll",
+                "concrt140.dll", "vcomp140.dll", "ucrtbase.dll",
+                "msvcp120.dll", "msvcr120.dll", "vcomp120.dll",
+                "msvcp110.dll", "msvcr110.dll", "vcomp110.dll",
+                "msvcp100.dll", "msvcr100.dll", "vcomp100.dll",
+                "msvcp90.dll", "msvcr90.dll", "msvcp80.dll", "msvcr80.dll",
+                "d3dcompiler_43.dll", "d3dcompiler_46.dll", "d3dcompiler_47.dll",
+                "d3dx9_41.dll", "d3dx9_42.dll", "d3dx9_43.dll",
+                "d3dx10_43.dll", "d3dx11_42.dll", "d3dx11_43.dll",
+                "xinput1_1.dll", "xinput1_2.dll", "xinput1_3.dll", "xinput1_4.dll", "xinput9_1_0.dll",
+                "xaudio2_7.dll", "xaudio2_8.dll", "xaudio2_9.dll", "x3daudio1_7.dll"
+            };
+
+            for (String dll : criticalDlls) {
+                File dst64 = new File(sys32, dll);
+                if (!dst64.isFile()) {
+                    File src64 = new File(wineX64, dll);
+                    if (src64.isFile()) FileUtils.copy(src64, dst64);
+                }
+                File dst32 = new File(syswow64, dll);
+                if (!dst32.isFile()) {
+                    File src32 = new File(wineX86, dll);
+                    if (src32.isFile()) FileUtils.copy(src32, dst32);
+                }
+            }
+
+            // Распаковываем нативные vcrun2010 и direct3d если они ещё не распакованы
+            File marker = new File(container.getRootDir(), ".wine/.pro_dx_vc15_ready");
+            if (!marker.isFile()) {
+                File winDir = new File(container.getRootDir(), ".wine/drive_c/windows");
+                TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, context, "wincomponents/vcrun2010.tzst", winDir);
+                TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, context, "wincomponents/vcrun2005.tzst", winDir);
+                TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, context, "wincomponents/xaudio.tzst", winDir);
+                FileUtils.writeString(marker, "1");
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    private static void scanGameFolderForRedistsAndDlls(
+        Container container,
+        File rootGameDir,
+        File currentDir,
+        int depth,
+        int maxDepth,
+        Set<String> outDllDirsDos
+    ) {
+        if (currentDir == null || !currentDir.isDirectory() || depth > maxDepth) return;
+        File[] files = currentDir.listFiles();
+        if (files == null) return;
+
+        boolean hasDll = false;
+        String dirNameLower = currentDir.getName().toLowerCase(Locale.ROOT);
+        boolean isRedistSubdir = dirNameLower.contains("redist") || dirNameLower.contains("directx") ||
+            dirNameLower.contains("vc15") || dirNameLower.contains("vcredist") || dirNameLower.contains("prereq");
+
+        for (File f : files) {
+            if (f.isDirectory()) {
+                if (!f.getName().startsWith(".")) {
+                    scanGameFolderForRedistsAndDlls(container, rootGameDir, f, depth + 1, maxDepth, outDllDirsDos);
+                }
+            } else {
+                String lower = f.getName().toLowerCase(Locale.ROOT);
+                if (lower.endsWith(".dll")) {
+                    hasDll = true;
+                    // Если DLL лежит внутри подпапки редистрибутивов (_CommonRedist, DirectX, vc15) —
+                    // дублируем её в корень папки с игрой, чтобы .exe гарантированно нашёл её при старте!
+                    if (isRedistSubdir && !currentDir.equals(rootGameDir)) {
+                        File targetInGameRoot = new File(rootGameDir, f.getName());
+                        if (!targetInGameRoot.exists()) {
+                            FileUtils.copy(f, targetInGameRoot);
+                        }
+                    }
+                }
+            }
+        }
+
+        if (hasDll) {
+            String dosDir = WineUtils.unixToDOSPath(currentDir.getAbsolutePath(), container);
+            if (dosDir != null && !dosDir.isEmpty() && !dosDir.equals("\\")) {
+                outDllDirsDos.add(dosDir);
+            }
+        }
+    }
+
+    /**
+     * Диалог выбора целой папки с игрой (через системный выбор папки Android или список папок в памяти),
+     * чтобы игра открывалась вместе со всей своей папкой, данными, DirectX и VC15!
+     */
+    public static void promptPickWholeGameFolder(final Activity activity, final Container container, final Runnable onRefreshCallback) {
+        if (!(activity instanceof MainActivity)) return;
+        final MainActivity ma = (MainActivity) activity;
+        ma.setOpenDirectoryCallback(treeUri -> {
+            if (treeUri == null) return;
+            Executors.newSingleThreadExecutor().execute(() -> {
+                String folderPath = FileUtils.getFilePathFromUri(treeUri);
+                if (folderPath == null || folderPath.isEmpty()) {
+                    String last = treeUri.getLastPathSegment();
+                    if (last != null && last.contains(":")) {
+                        String[] parts = last.split(":", 2);
+                        folderPath = Environment.getExternalStorageDirectory() + "/" + (parts.length > 1 ? parts[1] : "");
+                    }
+                }
+                final File folder = (folderPath != null) ? new File(folderPath) : null;
+                if (folder == null || !folder.isDirectory()) {
+                    activity.runOnUiThread(() -> AppUtils.showToast(activity, "⚠️ Выберите папку внутри памяти телефона"));
+                    return;
+                }
+
+                // Ищем все .exe/.msi внутри выбранной папки с игрой
+                final List<File> foundExes = new ArrayList<>();
+                findExecutablesInGameFolder(folder, 0, 2, foundExes);
+                if (foundExes.isEmpty()) {
+                    activity.runOnUiThread(() -> AppUtils.showToast(activity, "⚠️ В выбранной папке (" + folder.getName() + ") не найдено .exe или .msi файлов"));
+                    return;
+                }
+
+                // Выбираем главный .exe игры (пропуская unins000.exe, UnityCrashHandler и vc_redist)
+                File bestGameExe = foundExes.get(0);
+                for (File cand : foundExes) {
+                    if (classifyExecutable(cand, folder).equals(CAT_GAME)) {
+                        bestGameExe = cand;
+                        break;
+                    }
+                }
+                for (File cand : foundExes) {
+                    if (!classifyExecutable(cand, folder).equals(CAT_SYSTEM)) {
+                        pinExecutableToDesktopWithIcon(activity, container, cand);
+                    }
+                }
+                prepareGameFolderAndDependencies(activity, container, bestGameExe);
+                pinExecutableToDesktopWithIcon(activity, container, bestGameExe);
+
+                final File launchTarget = bestGameExe;
+                activity.runOnUiThread(() -> {
+                    if (onRefreshCallback != null) onRefreshCallback.run();
+                    AppUtils.showToast(activity, "✅ Папка «" + folder.getName() + "» подключена целиком! Ярлык создан: " + launchTarget.getName());
+                    launchWithMemoryCheck(activity, container, launchTarget.getAbsolutePath());
+                });
+            });
+        });
+
+        try {
+            Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+            ma.startActivityForResult(intent, MainActivity.OPEN_DIRECTORY_REQUEST_CODE);
+        } catch (Throwable e) {
+            showUniversalExeLauncherDialog(activity, container, onRefreshCallback);
+        }
+    }
+
+    private static void findExecutablesInGameFolder(File dir, int depth, int maxDepth, List<File> out) {
+        if (dir == null || !dir.isDirectory() || depth > maxDepth) return;
+        File[] files = dir.listFiles();
+        if (files == null) return;
+        for (File f : files) {
+            if (f.isDirectory()) {
+                findExecutablesInGameFolder(f, depth + 1, maxDepth, out);
+            } else {
+                String lower = f.getName().toLowerCase(Locale.ROOT);
+                if (lower.endsWith(".exe") || lower.endsWith(".msi") || lower.endsWith(".bat")) {
+                    out.add(f);
+                }
+            }
+        }
+    }
+
+    /**
+     * Создаёт рабочий ярлык .desktop и .lnk на Рабочем столе Windows (Users/xuser/Desktop)
+     * с правильным путём (без одиночного '\'), рабочей директорией (workingDir) и извлечённой иконкой!
+     */
+    public static boolean pinExecutableToDesktopWithIcon(Context context, Container container, File rawExeFile) {
+        if (container == null || rawExeFile == null || !rawExeFile.exists()) return false;
+        try {
+            File exeFile = resolveFullFolderExeIfOrphan(rawExeFile);
+            prepareGameFolderAndDependencies(context, container, exeFile);
+
             File desktopDir = new File(container.getUserDir(), "Desktop");
             if (!desktopDir.exists()) desktopDir.mkdirs();
 
@@ -425,7 +782,7 @@ public class WinlatorProSuite {
             if (baseName.isEmpty()) baseName = exeFile.getName();
             String safeIconName = baseName.replaceAll("[^a-zA-Z0-9._-]", "_");
 
-            // Извлекаем реальную иконку из .exe через PEParser
+            // Извлекаем реальную иконку из .exe через PEParser во все стандартные папки иконок контейнера
             Bitmap iconBmp = null;
             if (exeFile.getName().toLowerCase(Locale.ROOT).endsWith(".exe")) {
                 iconBmp = PEParser.extractIcon(exeFile);
@@ -437,57 +794,177 @@ public class WinlatorProSuite {
                 try (FileOutputStream fos = new FileOutputStream(iconPng)) {
                     iconBmp.compress(Bitmap.CompressFormat.PNG, 100, fos);
                 }
+                File iconDirectName = new File(icons64Dir, baseName + ".png");
+                if (!iconDirectName.equals(iconPng)) {
+                    try (FileOutputStream fos2 = new FileOutputStream(iconDirectName)) {
+                        iconBmp.compress(Bitmap.CompressFormat.PNG, 100, fos2);
+                    }
+                }
             }
 
             String dosPath = WineUtils.unixToDOSPath(exeFile.getAbsolutePath(), container);
-            if (dosPath == null || dosPath.isEmpty()) {
-                dosPath = "D:\\" + exeFile.getName();
+            if (dosPath == null || dosPath.isEmpty() || dosPath.equals("\\")) {
+                dosPath = "G:\\" + exeFile.getName();
+            }
+            String dosWorkingDir = FileUtils.getDirname(dosPath);
+            if (dosWorkingDir == null || dosWorkingDir.isEmpty() || !dosWorkingDir.contains(":")) {
+                dosWorkingDir = "C:\\windows";
             }
 
-            // 1. Создаём .lnk файл для отображения внутри Рабочего стола Windows (explorer.exe)
+            // 1. Создаём/обновляем .lnk файл для отображения внутри Рабочего стола Windows (explorer.exe) с рабочей папкой!
             File lnkFile = new File(desktopDir, baseName + ".lnk");
-            if (!lnkFile.exists()) {
-                MSLink.LinkInfo linkInfo = new MSLink.LinkInfo();
-                linkInfo.targetPath = dosPath;
-                linkInfo.iconLocation = dosPath;
-                linkInfo.isDirectory = false;
-                MSLink.createFile(linkInfo, lnkFile);
-            }
+            MSLink.LinkInfo linkInfo = new MSLink.LinkInfo();
+            linkInfo.targetPath = dosPath;
+            linkInfo.workingDir = dosWorkingDir;
+            linkInfo.iconLocation = dosPath;
+            linkInfo.isDirectory = false;
+            MSLink.createFile(linkInfo, lnkFile);
 
-            // 2. Создаём .desktop файл для отображения в разделе Ярлыки и на Рабочем столе Winlator
+            // 2. Создаём/обновляем .desktop файл для отображения во вкладке «Ярлыки» (ShortcutsFragment)
+            // ВАЖНО: используем StringUtils.escapeDOSPath(dosPath) БЕЗ внешних кавычек вокруг пути,
+            // чтобы Shortcut.java корректно извлекал чистый путь без двойных кавычек!
             File desktopEntry = new File(desktopDir, baseName + ".desktop");
             String winePrefix = container.getRootDir().getAbsolutePath() + "/.wine";
-            String escapedDos = dosPath.replace("\\", "\\\\");
+            String escapedDos = StringUtils.escapeDOSPath(dosPath);
             String content = "[Desktop Entry]\n" +
                 "Name=" + baseName + "\n" +
-                "Exec=env WINEPREFIX=\"" + winePrefix + "\" wine \"" + escapedDos + "\"\n" +
+                "Exec=env WINEPREFIX=\"" + winePrefix + "\" wine " + escapedDos + "\n" +
+                "Path=" + dosWorkingDir + "\n" +
                 "Type=Application\n" +
                 "StartupNotify=true\n" +
                 "Icon=" + safeIconName + "\n" +
-                "StartupWMClass=" + exeFile.getName() + "\n";
+                "StartupWMClass=" + exeFile.getName() + "\n" +
+                "\n[Extra Data]\n" +
+                "container_id=" + container.id + "\n";
             FileUtils.writeString(desktopEntry, content);
             return true;
-        } catch (Exception e) {
+        } catch (Throwable e) {
             return false;
         }
     }
 
     /**
-     * Сканирует установленные программы и игры в C:\Program Files, C:\Program Files (x86), C:\Games
-     * и выносит их на Рабочий стол с иконками (пропуская системные деинсталляторы unins000.exe и внутренние утилиты Wine).
+     * Проверяет, является ли файл системной утилитой / деинсталлятором / редистрибутивом,
+     * которые должны относиться к категории «⚙️ Система» и не засорять Рабочий стол.
+     */
+    private static boolean isSystemOrHelperExecutable(String fileNameLower, String fullPathLower) {
+        if (fileNameLower.startsWith("unins") || fileNameLower.contains("uninstall") ||
+            fileNameLower.contains("crashhandler") || fileNameLower.contains("crashpad") ||
+            fileNameLower.contains("vc_redist") || fileNameLower.contains("vcredist") ||
+            fileNameLower.contains("dxsetup") || fileNameLower.contains("ue4prereq") ||
+            fileNameLower.equals("add_path.exe") || fileNameLower.equals("msend.exe") ||
+            fileNameLower.equals("cz2slub.exe") || fileNameLower.equals("winhandler.exe") ||
+            fileNameLower.equals("wfm.exe") || fileNameLower.equals("winecfg.exe") ||
+            fileNameLower.equals("explorer.exe") || fileNameLower.equals("cmd.exe") ||
+            fileNameLower.equals("notepad.exe") || fileNameLower.equals("regedit.exe") ||
+            fileNameLower.equals("iexplore.exe") || fileNameLower.equals("winemenubuilder.exe") ||
+            fileNameLower.equals("services.exe") || fileNameLower.equals("winedevice.exe") ||
+            fileNameLower.equals("plugplay.exe") || fileNameLower.equals("svchost.exe") ||
+            fileNameLower.equals("rpcss.exe") || fileNameLower.equals("conhost.exe") ||
+            fileNameLower.equals("taskmgr.exe") || fileNameLower.equals("control.exe") ||
+            fileNameLower.equals("msiexec.exe") || fileNameLower.equals("testd3d.exe") ||
+            fileNameLower.equals("gpuinfo.exe") || fileNameLower.equals("winaddons.exe")) {
+            return true;
+        }
+        return fullPathLower.contains("/_commonredist/") || fullPathLower.contains("/redist/") ||
+               fullPathLower.contains("/directx/") || fullPathLower.contains("/vc15/");
+    }
+
+    /**
+     * Точная классификация каждого файла на 3 категории:
+     * - CAT_GAME («🎮 Игра»)
+     * - CAT_PROGRAM («💼 Программа»)
+     * - CAT_SYSTEM («⚙️ Система»)
+     */
+    public static String classifyExecutable(File exeFile, File parentDir) {
+        if (exeFile == null) return CAT_PROGRAM;
+        String lower = exeFile.getName().toLowerCase(Locale.ROOT);
+        String absLower = exeFile.getAbsolutePath().toLowerCase(Locale.ROOT).replace('\\', '/');
+
+        // 1. Система: деинсталляторы (unins000.exe), установщики (setup/install/.msi), редистрибутивы (DirectX, vc15) и системные утилиты
+        if (isSystemOrHelperExecutable(lower, absLower) ||
+            lower.endsWith(".msi") || lower.endsWith(".bat") || lower.endsWith(".cmd") ||
+            lower.contains("setup") || lower.contains("install") || lower.contains("patch") ||
+            lower.startsWith("is-") || absLower.contains("/windows/")) {
+            return CAT_SYSTEM;
+        }
+
+        // 2. Игра: находится в папке Games / GOG Games / Steam или содержит игровые движки/данные (UnityPlayer.dll, *_Data, steam_api, .pak, .pck)
+        String baseName = FileUtils.getBasename(exeFile.getName());
+        if (parentDir != null && parentDir.isDirectory()) {
+            if (new File(parentDir, baseName + "_Data").isDirectory() ||
+                new File(parentDir, "UnityPlayer.dll").isFile() ||
+                new File(parentDir, "MonoBleedingEdge").isDirectory() ||
+                new File(parentDir, "steam_api.dll").isFile() ||
+                new File(parentDir, "steam_api64.dll").isFile() ||
+                new File(parentDir, "Galaxy.dll").isFile() ||
+                new File(parentDir, "Galaxy64.dll").isFile() ||
+                new File(parentDir, "Engine").isDirectory() ||
+                new File(parentDir, "SDL2.dll").isFile() ||
+                new File(parentDir, "bink2w64.dll").isFile() ||
+                new File(parentDir, "fmod.dll").isFile() ||
+                new File(parentDir, "fmod64.dll").isFile()) {
+                return CAT_GAME;
+            }
+        }
+        if (absLower.contains("/games/") || absLower.contains("/gog games/") ||
+            absLower.contains("/steamapps/") || lower.contains("souldiers")) {
+            return CAT_GAME;
+        }
+
+        // 3. Программа: прикладные приложения (ZipGenius, 7-Zip, браузеры, редакторы и др.)
+        return CAT_PROGRAM;
+    }
+
+    public static String getCategoryBadgeLabel(String categoryCode, String fileNameLower) {
+        if (CAT_GAME.equals(categoryCode)) {
+            return "🎮 Игра";
+        } else if (CAT_SYSTEM.equals(categoryCode)) {
+            if (fileNameLower.startsWith("unins") || fileNameLower.contains("uninstall")) {
+                return "⚙️ Система (Деинсталлятор)";
+            } else if (fileNameLower.endsWith(".msi") || fileNameLower.contains("setup") || fileNameLower.contains("install")) {
+                return "⚙️ Система (Установщик)";
+            }
+            return "⚙️ Система";
+        } else {
+            return "💼 Программа";
+        }
+    }
+
+    /**
+     * Очищает Рабочий стол от мусорных системных ярлыков (add_path, cz2slub, msend, unins000, vc_redist, winhandler)
+     * и автоматически выносит все настоящие Игры и Программы с их иконками и рабочими папками!
      */
     public static int syncInstalledExeToDesktopWithIcons(Context context, Container container) {
         if (container == null) return 0;
+        try {
+            File desktopDir = new File(container.getUserDir(), "Desktop");
+            if (desktopDir.isDirectory()) {
+                File[] deskFiles = desktopDir.listFiles();
+                if (deskFiles != null) {
+                    final String[] junkNames = {"add_path", "cz2slub", "msend", "unins000", "vc_redist.x64", "vc_redist.x86", "winhandler", "unitycrashhandler64", "unitycrashhandler32"};
+                    for (File df : deskFiles) {
+                        String b = FileUtils.getBasename(df.getName()).toLowerCase(Locale.ROOT);
+                        for (String junk : junkNames) {
+                            if (b.equals(junk) || b.startsWith("unins0")) {
+                                df.delete();
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (Throwable ignored) {}
+
         int count = 0;
         List<DiscoveredProgram> all = scanAllAvailableProgramsAndGames(container);
         for (DiscoveredProgram prog : all) {
-            String lower = prog.file.getName().toLowerCase(Locale.ROOT);
-            if (lower.startsWith("unins") || lower.equals("winecfg.exe") || lower.equals("explorer.exe") ||
-                lower.equals("cmd.exe") || lower.equals("notepad.exe") || lower.equals("regedit.exe") ||
-                lower.equals("iexplore.exe") || lower.equals("winemenubuilder.exe") || lower.equals("services.exe") ||
-                lower.equals("winedevice.exe") || lower.equals("plugplay.exe") || lower.equals("svchost.exe") ||
-                lower.equals("rpcss.exe") || lower.equals("conhost.exe")) {
-                continue;
+            if (CAT_SYSTEM.equals(prog.categoryCode)) {
+                // Не засоряем Рабочий стол системными утилитами и деинсталляторами unins000.exe,
+                // кроме явно нужного SteamSetup.exe
+                if (!prog.file.getName().equalsIgnoreCase("SteamSetup.exe")) {
+                    continue;
+                }
             }
             if (pinExecutableToDesktopWithIcon(context, container, prog.file)) {
                 count++;
@@ -497,8 +974,8 @@ public class WinlatorProSuite {
     }
 
     /**
-     * Находит ВСЕ доступные игры, программы и установщики (.exe, .msi, .bat, .cmd, .lnk)
-     * на всех дисках контейнера (C:, D: Загрузки, E: Документы, Рабочий стол).
+     * Сканирует все доступные игры, программы и системные файлы (.exe, .msi, .bat, .cmd)
+     * на всех дисках контейнера (C:, D: Download, G: память телефона, GOG Games, Games, Program Files).
      */
     public static List<DiscoveredProgram> scanAllAvailableProgramsAndGames(Container container) {
         List<DiscoveredProgram> result = new ArrayList<>();
@@ -507,16 +984,21 @@ public class WinlatorProSuite {
 
         File driveC = new File(container.getRootDir(), ".wine/drive_c");
         File desktopDir = new File(container.getUserDir(), "Desktop");
+        File extRoot = Environment.getExternalStorageDirectory();
         File downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
         File documentsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS);
 
         List<File> rootsToScan = Arrays.asList(
-            desktopDir,
+            new File(driveC, "Games"),
+            new File(driveC, "GOG Games"),
             new File(driveC, "Program Files"),
             new File(driveC, "Program Files (x86)"),
-            new File(driveC, "Games"),
             downloadsDir,
-            documentsDir
+            new File(extRoot, "Games"),
+            new File(extRoot, "GOG Games"),
+            new File(extRoot, "Winlator"),
+            documentsDir,
+            desktopDir
         );
 
         for (File root : rootsToScan) {
@@ -528,6 +1010,9 @@ public class WinlatorProSuite {
         Collections.sort(result, new Comparator<DiscoveredProgram>() {
             @Override
             public int compare(DiscoveredProgram a, DiscoveredProgram b) {
+                int rankA = CAT_GAME.equals(a.categoryCode) ? 0 : (CAT_PROGRAM.equals(a.categoryCode) ? 1 : 2);
+                int rankB = CAT_GAME.equals(b.categoryCode) ? 0 : (CAT_PROGRAM.equals(b.categoryCode) ? 1 : 2);
+                if (rankA != rankB) return Integer.compare(rankA, rankB);
                 if (a.isOnDesktop != b.isOnDesktop) return a.isOnDesktop ? -1 : 1;
                 return a.name.compareToIgnoreCase(b.name);
             }
@@ -544,41 +1029,50 @@ public class WinlatorProSuite {
         Set<String> visited,
         List<DiscoveredProgram> out
     ) {
-        if (dir == null || !dir.exists() || depth > maxDepth || out.size() > 160) return;
+        if (dir == null || !dir.exists() || depth > maxDepth || out.size() > 180) return;
         File[] children = dir.listFiles();
         if (children == null) return;
 
         for (File f : children) {
-            String abs = f.getAbsolutePath();
+            File targetFile = resolveFullFolderExeIfOrphan(f);
+            String abs = targetFile.getAbsolutePath();
             if (visited.contains(abs)) continue;
             visited.add(abs);
 
-            if (f.isDirectory()) {
-                String dName = f.getName().toLowerCase(Locale.ROOT);
+            if (targetFile.isDirectory()) {
+                String dName = targetFile.getName().toLowerCase(Locale.ROOT);
                 if (dName.equals("windows") || dName.equals("common files") || dName.equals("internet explorer") ||
-                    dName.equals("windows nt") || dName.equals("windows media player") || dName.startsWith(".")) {
+                    dName.equals("windows nt") || dName.equals("windows media player") ||
+                    dName.equals("monobleedingedge") || dName.endsWith("_data") || dName.startsWith(".")) {
                     continue;
                 }
-                scanDirectoryRecursive(container, f, desktopDir, depth + 1, maxDepth, visited, out);
+                scanDirectoryRecursive(container, targetFile, desktopDir, depth + 1, maxDepth, visited, out);
             } else {
-                String name = f.getName();
+                String name = targetFile.getName();
                 String lower = name.toLowerCase(Locale.ROOT);
                 if (lower.endsWith(".exe") || lower.endsWith(".msi") || lower.endsWith(".bat") || lower.endsWith(".cmd")) {
-                    if (lower.equals("winhandler.exe") || lower.equals("wfm.exe")) continue;
+                    if (lower.equals("winhandler.exe") || lower.equals("wfm.exe") ||
+                        lower.equals("add_path.exe") || lower.equals("msend.exe") || lower.equals("cz2slub.exe") ||
+                        lower.contains("unitycrashhandler")) {
+                        continue;
+                    }
                     String baseName = FileUtils.getBasename(name);
-                    boolean isInstaller = lower.endsWith(".msi") || lower.contains("setup") || lower.contains("install") || lower.contains("patch");
-                    String cat = isInstaller ? "📦 Установщик (.EXE/.MSI)" : "🎮 Игра / Программа";
+                    String catCode = classifyExecutable(targetFile, targetFile.getParentFile());
+                    String catLabel = getCategoryBadgeLabel(catCode, lower);
                     String dos = WineUtils.unixToDOSPath(abs, container);
-                    if (dos == null || dos.isEmpty()) dos = abs;
+                    if (dos == null || dos.isEmpty() || dos.equals("\\")) {
+                        dos = "G:\\" + name;
+                    }
+                    String workingDosDir = FileUtils.getDirname(dos);
                     boolean onDesktop = desktopDir != null && (
                         new File(desktopDir, baseName + ".desktop").exists() ||
                         new File(desktopDir, baseName + ".lnk").exists()
                     );
-                    DiscoveredProgram prog = new DiscoveredProgram(f, baseName, cat, dos, f.length(), onDesktop);
+                    DiscoveredProgram prog = new DiscoveredProgram(
+                        targetFile, baseName, catCode, catLabel, dos, workingDosDir, targetFile.length(), onDesktop
+                    );
                     if (lower.endsWith(".exe")) {
-                        try {
-                            prog.iconBitmap = PEParser.extractIcon(f);
-                        } catch (Exception ignored) {}
+                        prog.iconBitmap = PEParser.extractIcon(targetFile);
                     }
                     out.add(prog);
                 }
@@ -588,41 +1082,43 @@ public class WinlatorProSuite {
 
     /**
      * ============================================================================
-     * МОДУЛЬ 2: УНИВЕРСАЛЬНЫЙ ЛАУНЧЕР ВСЕХ ДОСТУПНЫХ ИГР И ПРОГРАММ (.EXE / .MSI / .BAT)
+     * МОДУЛЬ 2: УНИВЕРСАЛЬНЫЙ ЛАУНЧЕР С ФИЛЬТРАЦИЕЙ «ИГРА — ПРОГРАММА — СИСТЕМА»
+     * И ОТКРЫТИЕМ ЛЮБОГО .EXE/.MSI ЦЕЛИКОМ С ЕГО ПАПКОЙ, DIRECTX И VC15!
      * ============================================================================
      */
     public static void showUniversalExeLauncherDialog(final Activity activity, final Container container, final Runnable onRefreshCallback) {
         final Context ctx = activity;
         LinearLayout root = new LinearLayout(ctx);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(ctx, 14), dp(ctx, 12), dp(ctx, 14), dp(ctx, 12));
+        root.setPadding(dp(ctx, 12), dp(ctx, 10), dp(ctx, 12), dp(ctx, 10));
         root.setBackgroundColor(0xFF0B1120);
 
         TextView tvTitle = new TextView(ctx);
-        tvTitle.setText("🎮 Лаунчер Всех Игр и Программ (.EXE / .MSI / .BAT)");
+        tvTitle.setText("🎮 Лаунчер: Игры • Программы • Система (.EXE / .MSI)");
         tvTitle.setTextColor(Color.WHITE);
-        tvTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
+        tvTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f);
         tvTitle.setTypeface(Typeface.DEFAULT_BOLD);
         root.addView(tvTitle);
 
         MemoryStatus mem = queryMemoryStatus(ctx);
         TextView tvSub = new TextView(ctx);
-        tvSub.setText("💾 Свободно памяти: " + mem.formatStorageGb() + " | 🧠 ОЗУ: " + mem.formatRamMb() +
-            "\nВсе найденные игры и программы на дисках C:, D: (Download), E: и Рабочем столе:");
+        tvSub.setText("💾 Свободно: " + mem.formatStorageGb() + " | 🧠 ОЗУ: " + mem.formatRamMb() +
+            "\nОткрывает любой .exe/.msi целиком со всей его папкой данных, DirectX и VC15 (VC++ 2015-2022):");
         tvSub.setTextColor(mem.isLowStorage ? 0xFFFACC15 : 0xFF38BDF8);
-        tvSub.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f);
-        tvSub.setPadding(0, dp(ctx, 4), 0, dp(ctx, 8));
+        tvSub.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f);
+        tvSub.setPadding(0, dp(ctx, 2), 0, dp(ctx, 6));
         root.addView(tvSub);
-
-        LinearLayout topButtons = new LinearLayout(ctx);
-        topButtons.setOrientation(LinearLayout.HORIZONTAL);
-        topButtons.setPadding(0, 0, 0, dp(ctx, 8));
 
         final AlertDialog dialog = new AlertDialog.Builder(ctx)
             .setView(root)
             .create();
 
-        Button btnPickExternal = createStyledButton(ctx, "📂 Выбрать любой .EXE/.MSI из памяти", 0xFF0284C7, 0xFF38BDF8);
+        // Кнопки выбора файла (с родной папкой) и выбора целой папки игры
+        LinearLayout topButtons = new LinearLayout(ctx);
+        topButtons.setOrientation(LinearLayout.HORIZONTAL);
+        topButtons.setPadding(0, 0, 0, dp(ctx, 6));
+
+        Button btnPickExternal = createStyledButton(ctx, "📂 Выбрать .EXE/.MSI (с его папкой)", 0xFF0284C7, 0xFF38BDF8);
         btnPickExternal.setOnClickListener(v -> {
             dialog.dismiss();
             if (activity instanceof MainActivity) {
@@ -631,9 +1127,6 @@ public class WinlatorProSuite {
                     Executors.newSingleThreadExecutor().execute(() -> {
                         ContainerManager cm = new ContainerManager(activity);
                         final File imported = cm.importExeFromUri(uri, container);
-                        if (imported != null) {
-                            pinExecutableToDesktopWithIcon(activity, container, imported);
-                        }
                         activity.runOnUiThread(() -> {
                             if (onRefreshCallback != null) onRefreshCallback.run();
                             if (imported != null) {
@@ -648,29 +1141,66 @@ public class WinlatorProSuite {
                 ma.startActivityForResult(pick, MainActivity.OPEN_FILE_REQUEST_CODE);
             }
         });
-        topButtons.addView(btnPickExternal, new LinearLayout.LayoutParams(0, dp(ctx, 38), 1.2f) {{
+        topButtons.addView(btnPickExternal, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f) {{
             rightMargin = dp(ctx, 6);
         }});
 
-        Button btnPinAll = createStyledButton(ctx, "📌 Вынести все с иконкой на Рабочий стол", 0xFF059669, 0xFF34D399);
-        topButtons.addView(btnPinAll, new LinearLayout.LayoutParams(0, dp(ctx, 38), 1f));
+        Button btnPickFolder = createStyledButton(ctx, "📁 Открыть папку с игрой целиком", 0xFF059669, 0xFF34D399);
+        btnPickFolder.setOnClickListener(v -> {
+            dialog.dismiss();
+            promptPickWholeGameFolder(activity, container, onRefreshCallback);
+        });
+        topButtons.addView(btnPickFolder, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         root.addView(topButtons);
 
+        // Поле поиска
         final EditText etSearch = new EditText(ctx);
-        etSearch.setHint("🔍 Поиск игры, программы или установщика (.exe, .msi)...");
+        etSearch.setHint("🔍 Поиск игры, программы или установщика...");
         etSearch.setHintTextColor(0xFF64748B);
         etSearch.setTextColor(Color.WHITE);
-        etSearch.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        etSearch.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f);
+        etSearch.setSingleLine(true);
         etSearch.setPadding(dp(ctx, 10), dp(ctx, 6), dp(ctx, 10), dp(ctx, 6));
         etSearch.setBackground(roundedBg(0xFF1E293B, 0xFF38BDF8, 1, 8, ctx));
         root.addView(etSearch);
 
+        // ВКЛАДКИ ФИЛЬТРАЦИИ: Все | 🎮 Игра | 💼 Программа | ⚙️ Система
+        final List<DiscoveredProgram> allPrograms = scanAllAvailableProgramsAndGames(container);
+        int countAll = allPrograms.size();
+        int countGames = 0, countProgs = 0, countSys = 0;
+        for (DiscoveredProgram p : allPrograms) {
+            if (CAT_GAME.equals(p.categoryCode)) countGames++;
+            else if (CAT_PROGRAM.equals(p.categoryCode)) countProgs++;
+            else countSys++;
+        }
+
+        HorizontalScrollView filterScroll = new HorizontalScrollView(ctx);
+        filterScroll.setHorizontalScrollBarEnabled(false);
+        LinearLayout filterRow = new LinearLayout(ctx);
+        filterRow.setOrientation(LinearLayout.HORIZONTAL);
+        filterRow.setPadding(0, dp(ctx, 6), 0, dp(ctx, 4));
+
+        final String[] activeFilter = {CAT_ALL};
+        final Button btnTabAll = createStyledButton(ctx, "📋 Все (" + countAll + ")", 0xFF0284C7, 0xFF38BDF8);
+        final Button btnTabGame = createStyledButton(ctx, "🎮 Игра (" + countGames + ")", 0xFF1E293B, 0xFF475569);
+        final Button btnTabProg = createStyledButton(ctx, "💼 Программа (" + countProgs + ")", 0xFF1E293B, 0xFF475569);
+        final Button btnTabSys = createStyledButton(ctx, "⚙️ Система (" + countSys + ")", 0xFF1E293B, 0xFF475569);
+
+        LinearLayout.LayoutParams tabLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        tabLp.rightMargin = dp(ctx, 6);
+        filterRow.addView(btnTabAll, tabLp);
+        filterRow.addView(btnTabGame, tabLp);
+        filterRow.addView(btnTabProg, tabLp);
+        filterRow.addView(btnTabSys, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        filterScroll.addView(filterRow);
+        root.addView(filterScroll);
+
         ScrollView scroll = new ScrollView(ctx);
         LinearLayout.LayoutParams scrollLp = new LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
-            dp(ctx, 360)
+            dp(ctx, 320)
         );
-        scrollLp.topMargin = dp(ctx, 8);
+        scrollLp.topMargin = dp(ctx, 4);
         scroll.setLayoutParams(scrollLp);
 
         final LinearLayout listContainer = new LinearLayout(ctx);
@@ -678,13 +1208,22 @@ public class WinlatorProSuite {
         scroll.addView(listContainer);
         root.addView(scroll);
 
-        final List<DiscoveredProgram> allPrograms = scanAllAvailableProgramsAndGames(container);
+        final Runnable updateTabStyles = () -> {
+            btnTabAll.setBackground(roundedBg(CAT_ALL.equals(activeFilter[0]) ? 0xFF0284C7 : 0xFF1E293B, 0xFF38BDF8, 1, 8, ctx));
+            btnTabGame.setBackground(roundedBg(CAT_GAME.equals(activeFilter[0]) ? 0xFF059669 : 0xFF1E293B, 0xFF34D399, 1, 8, ctx));
+            btnTabProg.setBackground(roundedBg(CAT_PROGRAM.equals(activeFilter[0]) ? 0xFF7C3AED : 0xFF1E293B, 0xFFA78BFA, 1, 8, ctx));
+            btnTabSys.setBackground(roundedBg(CAT_SYSTEM.equals(activeFilter[0]) ? 0xFFD97706 : 0xFF1E293B, 0xFFFBBF24, 1, 8, ctx));
+        };
 
         final Runnable renderList = () -> {
+            updateTabStyles.run();
             listContainer.removeAllViews();
             String q = etSearch.getText().toString().trim().toLowerCase(Locale.ROOT);
             int shown = 0;
             for (final DiscoveredProgram prog : allPrograms) {
+                if (!CAT_ALL.equals(activeFilter[0]) && !activeFilter[0].equals(prog.categoryCode)) {
+                    continue;
+                }
                 if (!q.isEmpty() && !prog.name.toLowerCase(Locale.ROOT).contains(q) &&
                     !prog.file.getName().toLowerCase(Locale.ROOT).contains(q)) {
                     continue;
@@ -711,7 +1250,7 @@ public class WinlatorProSuite {
                 } else {
                     iconView.setImageResource(R.drawable.container_file_window);
                 }
-                headerRow.addView(iconView, new LinearLayout.LayoutParams(dp(ctx, 40), dp(ctx, 40)) {{
+                headerRow.addView(iconView, new LinearLayout.LayoutParams(dp(ctx, 38), dp(ctx, 38)) {{
                     rightMargin = dp(ctx, 10);
                 }});
 
@@ -721,14 +1260,15 @@ public class WinlatorProSuite {
                 tvName.setText(prog.name + " (" + prog.file.getName() + ")");
                 tvName.setTextColor(Color.WHITE);
                 tvName.setTypeface(Typeface.DEFAULT_BOLD);
-                tvName.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+                tvName.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f);
                 infoCol.addView(tvName);
 
                 TextView tvMeta = new TextView(ctx);
-                String deskBadge = prog.isOnDesktop ? " • ✅ На Рабочем столе с иконкой" : "";
-                tvMeta.setText(prog.category + " • " + StringUtils.formatBytes(prog.sizeBytes) + " • " + prog.dosPath + deskBadge);
+                String deskBadge = prog.isOnDesktop ? " • ✅ На Рабочем столе" : "";
+                tvMeta.setText(prog.categoryLabel + " • " + StringUtils.formatBytes(prog.sizeBytes) +
+                    "\n📁 Папка: " + prog.workingDosDir + deskBadge);
                 tvMeta.setTextColor(prog.isOnDesktop ? 0xFF34D399 : 0xFF94A3B8);
-                tvMeta.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+                tvMeta.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f);
                 infoCol.addView(tvMeta);
 
                 headerRow.addView(infoCol, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
@@ -738,24 +1278,32 @@ public class WinlatorProSuite {
                 actRow.setOrientation(LinearLayout.HORIZONTAL);
                 actRow.setPadding(0, dp(ctx, 6), 0, 0);
 
-                Button btnRun = createStyledButton(ctx, "🚀 Запустить (с Рабочим столом)", 0xFF059669, 0xFF34D399);
+                Button btnRun = createStyledButton(ctx, "🚀 Запустить (с папкой)", 0xFF059669, 0xFF34D399);
                 btnRun.setOnClickListener(v -> {
                     dialog.dismiss();
                     launchWithMemoryCheck(activity, container, prog.file.getAbsolutePath());
                 });
-                actRow.addView(btnRun, new LinearLayout.LayoutParams(0, dp(ctx, 34), 1.3f) {{
+                actRow.addView(btnRun, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.15f) {{
                     rightMargin = dp(ctx, 6);
                 }});
 
-                Button btnPin = createStyledButton(ctx, "📌 На Рабочий стол с иконкой", 0xFF0284C7, 0xFF38BDF8);
+                final Button btnPin = createStyledButton(
+                    ctx,
+                    prog.isOnDesktop ? "✅ Ярлык создан" : "📌 На Рабочий стол",
+                    prog.isOnDesktop ? 0xFF1E293B : 0xFF0284C7,
+                    0xFF38BDF8
+                );
                 btnPin.setOnClickListener(v -> {
                     boolean ok = pinExecutableToDesktopWithIcon(activity, container, prog.file);
                     if (ok) {
-                        AppUtils.showToast(activity, "✅ Ярлык с иконкой добавлен на Рабочий стол: " + prog.name);
+                        prog.isOnDesktop = true;
+                        btnPin.setText("✅ Ярлык создан");
+                        btnPin.setBackground(roundedBg(0xFF1E293B, 0xFF10B981, 1, 8, ctx));
+                        AppUtils.showToast(activity, "✅ Ярлык с иконкой и рабочей папкой создан на Рабочем столе: " + prog.name);
                         if (onRefreshCallback != null) onRefreshCallback.run();
                     }
                 });
-                actRow.addView(btnPin, new LinearLayout.LayoutParams(0, dp(ctx, 34), 1f));
+                actRow.addView(btnPin, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
                 card.addView(actRow);
                 listContainer.addView(card);
@@ -763,20 +1311,17 @@ public class WinlatorProSuite {
 
             if (shown == 0) {
                 TextView empty = new TextView(ctx);
-                empty.setText("Файлы .exe / .msi не найдены по запросу. Нажмите «📂 Выбрать любой .EXE/.MSI из памяти» выше или скопируйте игру в папку Download (Диск D:).");
+                empty.setText("В выбранной категории нет файлов. Нажмите «📂 Выбрать .EXE/.MSI» или «📁 Открыть папку с игрой целиком» выше.");
                 empty.setTextColor(0xFF94A3B8);
                 empty.setPadding(dp(ctx, 8), dp(ctx, 16), dp(ctx, 8), dp(ctx, 16));
                 listContainer.addView(empty);
             }
         };
 
-        btnPinAll.setOnClickListener(v -> {
-            int added = syncInstalledExeToDesktopWithIcons(activity, container);
-            AppUtils.showToast(activity, "📌 Все программы и игры (" + added + " шт.) добавлены с иконками на Рабочий стол!");
-            if (onRefreshCallback != null) onRefreshCallback.run();
-            dialog.dismiss();
-            showUniversalExeLauncherDialog(activity, container, onRefreshCallback);
-        });
+        btnTabAll.setOnClickListener(v -> { activeFilter[0] = CAT_ALL; renderList.run(); });
+        btnTabGame.setOnClickListener(v -> { activeFilter[0] = CAT_GAME; renderList.run(); });
+        btnTabProg.setOnClickListener(v -> { activeFilter[0] = CAT_PROGRAM; renderList.run(); });
+        btnTabSys.setOnClickListener(v -> { activeFilter[0] = CAT_SYSTEM; renderList.run(); });
 
         etSearch.addTextChangedListener(new TextWatcher() {
             @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
@@ -786,9 +1331,25 @@ public class WinlatorProSuite {
 
         renderList.run();
 
+        LinearLayout bottomRow = new LinearLayout(ctx);
+        bottomRow.setOrientation(LinearLayout.HORIZONTAL);
+        bottomRow.setPadding(0, dp(ctx, 6), 0, 0);
+
+        Button btnPinAll = createStyledButton(ctx, "📌 Вынести Игры/Программы на Рабочий стол", 0xFF059669, 0xFF34D399);
+        btnPinAll.setOnClickListener(v -> {
+            int added = syncInstalledExeToDesktopWithIcons(activity, container);
+            AppUtils.showToast(activity, "📌 Игры и программы (" + added + " шт.) вынесены с иконками на Рабочий стол!");
+            if (onRefreshCallback != null) onRefreshCallback.run();
+            dialog.dismiss();
+        });
+        bottomRow.addView(btnPinAll, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.4f) {{
+            rightMargin = dp(ctx, 6);
+        }});
+
         Button btnClose = createStyledButton(ctx, "Закрыть", 0xFF334155, 0xFF64748B);
         btnClose.setOnClickListener(v -> dialog.dismiss());
-        root.addView(btnClose);
+        bottomRow.addView(btnClose, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 0.6f));
+        root.addView(bottomRow);
 
         dialog.show();
     }
@@ -826,7 +1387,6 @@ public class WinlatorProSuite {
         sub.setPadding(0, dp(context, 4), 0, dp(context, 10));
         root.addView(sub);
 
-        // 1. Рендерер и Графический API
         TextView lblApi = new TextView(context);
         lblApi.setText("1. Графический API и Драйвер (Vulkan / OpenGL / DXVK):");
         lblApi.setTextColor(0xFFFACC15);
@@ -846,23 +1406,15 @@ public class WinlatorProSuite {
         spApi.setBackground(roundedBg(0xFF1E293B, 0xFF38BDF8, 1, 8, context));
         root.addView(spApi);
 
-        // 2. Разрешение экрана
         TextView lblRes = new TextView(context);
         lblRes.setText("\n2. Разрешение экрана и чёткость:");
         lblRes.setTextColor(0xFFFACC15);
         lblRes.setTypeface(Typeface.DEFAULT_BOLD);
         root.addView(lblRes);
 
-        final String[] resValues = {"800x600", "1024x768", "1280x720", "1600x900", "1920x1080"};
-        final String[] resLabels = {
-            "800x600 (Максимум FPS и скорости для тяжёлых игр)",
-            "1024x768 (Классика 4:3 — Герои, Diablo, CS 1.6, S.T.A.L.K.E.R.)",
-            "1280x720 (HD 16:9 — Идеальный баланс скорости и качества)",
-            "1600x900 (HD+ 16:9 — Повышенная детализация)",
-            "1920x1080 (FullHD 16:9 — Максимальное качество)"
-        };
+        final String[] resValues = {"800x600", "1024x768", "1280x720", "1366x768", "1600x900", "1920x1080"};
         final Spinner spRes = new Spinner(context);
-        spRes.setAdapter(new ArrayAdapter<>(context, android.R.layout.simple_spinner_dropdown_item, resLabels));
+        spRes.setAdapter(new ArrayAdapter<>(context, android.R.layout.simple_spinner_dropdown_item, resValues));
         int currentResIdx = 2;
         if (container != null) {
             for (int i = 0; i < resValues.length; i++) {
@@ -873,101 +1425,122 @@ public class WinlatorProSuite {
         spRes.setBackground(roundedBg(0xFF1E293B, 0xFF38BDF8, 1, 8, context));
         root.addView(spRes);
 
-        // 3. Лимит FPS и Турбо-Скорость
-        TextView lblFps = new TextView(context);
-        lblFps.setText("\n3. Целевой FPS и Режим Скорости (Box64 Dynarec + ESYNC/FSYNC):");
-        lblFps.setTextColor(0xFFFACC15);
+        final int[] fpsLimitVal = {prefs.getInt("pro_fps_limit", 120)};
+        final TextView lblFps = new TextView(context);
+        lblFps.setText("\n3. Лимит частоты кадров (FPS): " + (fpsLimitVal[0] >= 240 ? "240 FPS (Без лимита)" : fpsLimitVal[0] + " FPS"));
+        lblFps.setTextColor(0xFF34D399);
         lblFps.setTypeface(Typeface.DEFAULT_BOLD);
         root.addView(lblFps);
 
-        final String[] fpsValues = {"0", "30", "45", "60", "90", "120", "144"};
-        final String[] fpsLabels = {
-            "🚀 Без лимита (Максимальный FPS без ограничений)",
-            "30 FPS (Плавная стабилизация и экономия батареи)",
-            "45 FPS (Комфортный игровой режим)",
-            "60 FPS (Стандарт 60 Гц без разрывов кадра)",
-            "90 FPS (Высокая герцовка 90 Гц)",
-            "120 FPS (Киберспорт 120 Гц)",
-            "144 FPS (Экстремальная частота 144 Гц)"
-        };
-        final Spinner spFps = new Spinner(context);
-        spFps.setAdapter(new ArrayAdapter<>(context, android.R.layout.simple_spinner_dropdown_item, fpsLabels));
-        spFps.setSelection(prefs.getInt("pro_fps_limit_idx", 0));
-        spFps.setBackground(roundedBg(0xFF1E293B, 0xFF38BDF8, 1, 8, context));
-        root.addView(spFps);
+        SeekBar sbFps = new SeekBar(context);
+        sbFps.setMax(210);
+        sbFps.setProgress(Math.max(0, fpsLimitVal[0] - 30));
+        sbFps.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                fpsLimitVal[0] = 30 + progress;
+                lblFps.setText("\n3. Лимит частоты кадров (FPS): " + (fpsLimitVal[0] >= 240 ? "240 FPS (Без лимита)" : fpsLimitVal[0] + " FPS"));
+            }
+            @Override public void onStartTrackingTouch(SeekBar seekBar) {}
+            @Override public void onStopTrackingTouch(SeekBar seekBar) {}
+        });
+        root.addView(sbFps);
 
-        final String[] speedLabels = {
-            "⚡ ТУРБО-СКОРОСТЬ (Box64 FastNan + FastRound + BigBlock=3 + CallRet=1 + WeakBarrier=2)",
-            "⚖️ БАЛАНС (Оптимальная скорость + высокая стабильность)",
-            "🛡️ СОВМЕСТИМОСТЬ (StrongMem=1 для капризных установщиков .exe/.msi)"
+        TextView lblSpeed = new TextView(context);
+        lblSpeed.setText("\n4. Скорость работы CPU / Box64 Dynarec и ESYNC:");
+        lblSpeed.setTextColor(0xFFFACC15);
+        lblSpeed.setTypeface(Typeface.DEFAULT_BOLD);
+        root.addView(lblSpeed);
+
+        final String[] speedModes = {
+            "🚀 Ультра-Турбо Скорость (Box64 BigBlock=3, FastNan=1, StrongMem=0, ESYNC+FSYNC)",
+            "⚖️ Сбалансированная Скорость (Стабильный FPS + Быстрая загрузка)",
+            "🛡️ Максимальная Совместимость (Для чувствительных установщиков и античитов)"
         };
         final Spinner spSpeed = new Spinner(context);
-        spSpeed.setAdapter(new ArrayAdapter<>(context, android.R.layout.simple_spinner_dropdown_item, speedLabels));
-        spSpeed.setSelection(prefs.getInt("pro_speed_mode_idx", 0));
-        LinearLayout.LayoutParams spSpeedLp = new LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.WRAP_CONTENT
-        );
-        spSpeedLp.topMargin = dp(context, 6);
-        spSpeed.setLayoutParams(spSpeedLp);
-        spSpeed.setBackground(roundedBg(0xFF1E293B, 0xFF10B981, 1, 8, context));
+        spSpeed.setAdapter(new ArrayAdapter<>(context, android.R.layout.simple_spinner_dropdown_item, speedModes));
+        spSpeed.setSelection(prefs.getInt("pro_speed_idx", 0));
+        spSpeed.setBackground(roundedBg(0xFF1E293B, 0xFF38BDF8, 1, 8, context));
         root.addView(spSpeed);
 
-        final CheckBox cbShowFpsHud = new CheckBox(context);
-        cbShowFpsHud.setText("📊 Показывать счётчик FPS, GPU и частоты кадров на экране");
-        cbShowFpsHud.setTextColor(Color.WHITE);
-        cbShowFpsHud.setChecked(prefs.getBoolean("pro_show_fps_hud", true));
-        root.addView(cbShowFpsHud);
-
-        // 4. Комбинатор Шейдеров (можно совмещать любые вместе!)
         TextView lblShaders = new TextView(context);
-        lblShaders.setText("\n4. Комбинатор Шейдеров (можно включать и совмещать все сразу!):");
-        lblShaders.setTextColor(0xFF34D399);
+        lblShaders.setText("\n5. Комбинатор Шейдеров (можно включить сразу несколько!):");
+        lblShaders.setTextColor(0xFFA78BFA);
         lblShaders.setTypeface(Typeface.DEFAULT_BOLD);
         root.addView(lblShaders);
 
         final CheckBox cbCas = new CheckBox(context);
-        cbCas.setText("✨ AMD FidelityFX CAS Sharpening (Умная чёткость текстур и текста)");
+        cbCas.setText("✨ AMD FidelityFX CAS Sharpening (Ультра-чёткость текстур)");
         cbCas.setTextColor(Color.WHITE);
-        cbCas.setChecked(prefs.getBoolean("pro_shader_cas", true));
+        cbCas.setChecked(prefs.getBoolean("pro_shader_cas", false));
         root.addView(cbCas);
 
-        final SeekBar sbCas = new SeekBar(context);
-        sbCas.setMax(150);
-        sbCas.setProgress(prefs.getInt("pro_shader_cas_val", 70));
+        final int[] casStrength = {prefs.getInt("pro_shader_cas_val", 70)};
+        final TextView tvCasVal = new TextView(context);
+        tvCasVal.setText("   Интенсивность резкости CAS: " + casStrength[0] + "%");
+        tvCasVal.setTextColor(0xFF94A3B8);
+        root.addView(tvCasVal);
+
+        SeekBar sbCas = new SeekBar(context);
+        sbCas.setMax(100);
+        sbCas.setProgress(casStrength[0]);
+        sbCas.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar seekBar, int p, boolean b) {
+                casStrength[0] = p;
+                tvCasVal.setText("   Интенсивность резкости CAS: " + p + "%");
+            }
+            @Override public void onStartTrackingTouch(SeekBar seekBar) {}
+            @Override public void onStopTrackingTouch(SeekBar seekBar) {}
+        });
         root.addView(sbCas);
 
         final CheckBox cbHdr = new CheckBox(context);
-        cbHdr.setText("🌈 HDR Bloom & Vibrance (Насыщенность цветов и мягкое свечение HDR)");
+        cbHdr.setText("🌟 HDR10 Bloom & Vibrance (Сочные цвета и свечение)");
         cbHdr.setTextColor(Color.WHITE);
         cbHdr.setChecked(prefs.getBoolean("pro_shader_hdr", false));
         root.addView(cbHdr);
 
-        final SeekBar sbHdr = new SeekBar(context);
-        sbHdr.setMax(150);
-        sbHdr.setProgress(prefs.getInt("pro_shader_hdr_val", 55));
+        final int[] hdrStrength = {prefs.getInt("pro_shader_hdr_val", 55)};
+        final TextView tvHdrVal = new TextView(context);
+        tvHdrVal.setText("   Сила HDR свечения и насыщенности: " + hdrStrength[0] + "%");
+        tvHdrVal.setTextColor(0xFF94A3B8);
+        root.addView(tvHdrVal);
+
+        SeekBar sbHdr = new SeekBar(context);
+        sbHdr.setMax(100);
+        sbHdr.setProgress(hdrStrength[0]);
+        sbHdr.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar seekBar, int p, boolean b) {
+                hdrStrength[0] = p;
+                tvHdrVal.setText("   Сила HDR свечения и насыщенности: " + p + "%");
+            }
+            @Override public void onStartTrackingTouch(SeekBar seekBar) {}
+            @Override public void onStopTrackingTouch(SeekBar seekBar) {}
+        });
         root.addView(sbHdr);
 
         final CheckBox cbFxaa = new CheckBox(context);
-        cbFxaa.setText("💎 FXAA Anti-Aliasing (Сглаживание зубчатых краёв в 3D играх)");
+        cbFxaa.setText("📐 FXAA Subpixel Anti-Aliasing (Сглаживание лесенок на краях)");
         cbFxaa.setTextColor(Color.WHITE);
-        cbFxaa.setChecked(prefs.getBoolean("pro_shader_fxaa", true));
+        cbFxaa.setChecked(prefs.getBoolean("pro_shader_fxaa", false));
         root.addView(cbFxaa);
 
         final CheckBox cbColor = new CheckBox(context);
-        cbColor.setText("☀️ Усиление контраста и яркости (Color Grading Boost)");
+        cbColor.setText("🎨 Dynamic Contrast & Color Boost (Глубокий контраст и гамма)");
         cbColor.setTextColor(Color.WHITE);
         cbColor.setChecked(prefs.getBoolean("pro_shader_color", false));
         root.addView(cbColor);
 
         final CheckBox cbCrt = new CheckBox(context);
-        cbCrt.setText("📺 CRT Retro Scanlines (Эффект кинескопного монитора для классики)");
+        cbCrt.setText("📺 CRT Retro Scanlines (Эффект классического монитора)");
         cbCrt.setTextColor(Color.WHITE);
         cbCrt.setChecked(prefs.getBoolean("pro_shader_crt", false));
         root.addView(cbCrt);
 
         final CheckBox cbNight = new CheckBox(context);
-        cbNight.setText("🌙 Ночной буст теней (Высветление тёмных углов в шутерах и RPG)");
+        cbNight.setText("🌙 Night Vision / Shadow Boost (Осветление тёмных сцен в играх)");
         cbNight.setTextColor(Color.WHITE);
         cbNight.setChecked(prefs.getBoolean("pro_shader_night", false));
         root.addView(cbNight);
@@ -980,28 +1553,26 @@ public class WinlatorProSuite {
         btnRow.setOrientation(LinearLayout.HORIZONTAL);
         btnRow.setPadding(0, dp(context, 12), 0, 0);
 
-        Button btnBench = createStyledButton(context, "📊 Проверить FPS в тесте", 0xFFD97706, 0xFFFBBF24);
+        Button btnBench = createStyledButton(context, "📊 Проверить FPS", 0xFFD97706, 0xFFFBBF24);
         btnBench.setOnClickListener(v -> showFpsBenchmarkDialog(context, container));
-        btnRow.addView(btnBench, new LinearLayout.LayoutParams(0, dp(context, 40), 1f) {{
+        btnRow.addView(btnBench, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f) {{
             rightMargin = dp(context, 6);
         }});
 
-        Button btnSave = createStyledButton(context, "✅ Применить настройки и шейдеры", 0xFF059669, 0xFF34D399);
+        Button btnSave = createStyledButton(context, "✅ Сохранить и Применить", 0xFF059669, 0xFF34D399);
         btnSave.setOnClickListener(v -> {
             int apiIdx = spApi.getSelectedItemPosition();
-            int resIdx = spRes.getSelectedItemPosition();
-            int fpsIdx = spFps.getSelectedItemPosition();
             int speedIdx = spSpeed.getSelectedItemPosition();
+            String chosenRes = resValues[spRes.getSelectedItemPosition()];
 
             prefs.edit()
                 .putInt("pro_gfx_api_idx", apiIdx)
-                .putInt("pro_fps_limit_idx", fpsIdx)
-                .putInt("pro_speed_mode_idx", speedIdx)
-                .putBoolean("pro_show_fps_hud", cbShowFpsHud.isChecked())
+                .putInt("pro_speed_idx", speedIdx)
+                .putInt("pro_fps_limit", fpsLimitVal[0])
                 .putBoolean("pro_shader_cas", cbCas.isChecked())
-                .putInt("pro_shader_cas_val", sbCas.getProgress())
+                .putInt("pro_shader_cas_val", casStrength[0])
                 .putBoolean("pro_shader_hdr", cbHdr.isChecked())
-                .putInt("pro_shader_hdr_val", sbHdr.getProgress())
+                .putInt("pro_shader_hdr_val", hdrStrength[0])
                 .putBoolean("pro_shader_fxaa", cbFxaa.isChecked())
                 .putBoolean("pro_shader_color", cbColor.isChecked())
                 .putBoolean("pro_shader_crt", cbCrt.isChecked())
@@ -1009,43 +1580,31 @@ public class WinlatorProSuite {
                 .apply();
 
             if (container != null) {
-                container.setScreenSize(resValues[resIdx]);
-                container.setHUDMode(cbShowFpsHud.isChecked() ? (byte) FrameRating.Mode.FULL.ordinal() : (byte) FrameRating.Mode.DISABLED.ordinal());
-
+                container.setScreenSize(chosenRes);
                 if (apiIdx == 3) {
                     container.setDXWrapper("wined3d");
                 } else {
                     container.setDXWrapper("dxvk");
-                    String dxvkVer = (apiIdx == 2) ? "1.7.2" : "2.4.1";
-                    container.setDXWrapperConfig("version=" + dxvkVer + ",framerate=" + fpsValues[fpsIdx] + ",async=1,asyncCache=1");
+                    String ver = (apiIdx == 1) ? "2.4.1" : (apiIdx == 2 ? "1.7.2" : "1.7.2+2.4.1");
+                    int fr = fpsLimitVal[0] >= 240 ? 0 : fpsLimitVal[0];
+                    KeyValueSet cfg = new KeyValueSet(container.getDXWrapperConfig());
+                    cfg.put("version", ver);
+                    cfg.put("framerate", String.valueOf(fr));
+                    cfg.put("async", "1");
+                    cfg.put("asyncCache", "1");
+                    container.setDXWrapperConfig(cfg.toString());
                 }
 
                 if (speedIdx == 0) {
                     container.setBox64Preset("PERFORMANCE");
+                    container.setEnvVars("ZINK_DESCRIPTORS=lazy MESA_SHADER_CACHE_DISABLE=false MESA_SHADER_CACHE_MAX_SIZE=1024MB mesa_glthread=true WINEESYNC=1 WINEFSYNC=1 DXVK_ASYNC=1 BOX64_DYNAREC_BIGBLOCK=3 BOX64_DYNAREC_FASTNAN=1 BOX64_DYNAREC_STRONGMEM=0");
                 } else if (speedIdx == 1) {
                     container.setBox64Preset("INTERMEDIATE");
+                    container.setEnvVars("ZINK_DESCRIPTORS=lazy MESA_SHADER_CACHE_DISABLE=false WINEESYNC=1 DXVK_ASYNC=1");
                 } else {
                     container.setBox64Preset("COMPATIBILITY");
+                    container.setEnvVars("WINEESYNC=1 BOX64_DYNAREC_STRONGMEM=1");
                 }
-
-                EnvVars env = new EnvVars(container.getEnvVars());
-                env.put("WINEESYNC", "1");
-                env.put("WINEFSYNC", "1");
-                env.put("DXVK_ASYNC", "1");
-                env.put("MESA_GLTHREAD", "true");
-                if (!fpsValues[fpsIdx].equals("0")) {
-                    env.put("DXVK_FRAME_RATE", fpsValues[fpsIdx]);
-                } else {
-                    env.remove("DXVK_FRAME_RATE");
-                }
-                if (speedIdx == 0) {
-                    env.put("BOX64_DYNAREC_FASTNAN", "1");
-                    env.put("BOX64_DYNAREC_FASTROUND", "1");
-                    env.put("BOX64_DYNAREC_BIGBLOCK", "3");
-                    env.put("BOX64_DYNAREC_CALLRET", "1");
-                    env.put("BOX64_DYNAREC_WEAKBARRIER", "2");
-                }
-                container.setEnvVars(env.toString());
                 container.saveData();
             }
 
@@ -1053,80 +1612,77 @@ public class WinlatorProSuite {
                 applySavedShadersToRenderer(liveActivityOrNull);
             }
 
-            AppUtils.showToast(context, "✅ Графика, лимит FPS, скорость и комбинация шейдеров применены!");
+            AppUtils.showToast(context, "✅ Графика, лимит FPS, скорость и шейдеры применены!");
             dialog.dismiss();
         });
-        btnRow.addView(btnSave, new LinearLayout.LayoutParams(0, dp(context, 40), 1.3f));
+        btnRow.addView(btnSave, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.3f));
 
         root.addView(btnRow);
         dialog.show();
     }
 
     /**
-     * Применяет все выбранные пользователем шейдеры одновременно к GLRenderer.effectComposer!
+     * Потокобезопасно применяет выбранные шейдеры в GLThread через queueEvent.
      */
-    public static void applySavedShadersToRenderer(XServerDisplayActivity activity) {
+    public static void applySavedShadersToRenderer(final XServerDisplayActivity activity) {
         if (activity == null || activity.getXServerView() == null) return;
-        GLRenderer renderer = activity.getXServerView().getRenderer();
+        final GLRenderer renderer = activity.getXServerView().getRenderer();
         if (renderer == null || renderer.effectComposer == null) return;
 
-        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(activity);
+        final SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(activity);
+        activity.getXServerView().queueEvent(() -> {
+            try {
+                CASSharpenEffect cas = renderer.effectComposer.getEffect(CASSharpenEffect.class);
+                if (prefs.getBoolean("pro_shader_cas", false)) {
+                    if (cas == null) cas = new CASSharpenEffect();
+                    cas.setSharpness(prefs.getInt("pro_shader_cas_val", 70) / 100.0f);
+                    renderer.effectComposer.addEffect(cas);
+                } else if (cas != null) {
+                    renderer.effectComposer.removeEffect(cas);
+                }
 
-        // 1. CAS Sharpening
-        CASSharpenEffect cas = renderer.effectComposer.getEffect(CASSharpenEffect.class);
-        if (prefs.getBoolean("pro_shader_cas", true)) {
-            if (cas == null) cas = new CASSharpenEffect();
-            cas.setSharpness(prefs.getInt("pro_shader_cas_val", 70) / 100.0f);
-            renderer.effectComposer.addEffect(cas);
-        } else if (cas != null) {
-            renderer.effectComposer.removeEffect(cas);
-        }
+                HDRBloomEffect hdr = renderer.effectComposer.getEffect(HDRBloomEffect.class);
+                if (prefs.getBoolean("pro_shader_hdr", false)) {
+                    if (hdr == null) hdr = new HDRBloomEffect();
+                    hdr.setIntensity(prefs.getInt("pro_shader_hdr_val", 55) / 100.0f);
+                    renderer.effectComposer.addEffect(hdr);
+                } else if (hdr != null) {
+                    renderer.effectComposer.removeEffect(hdr);
+                }
 
-        // 2. HDR Bloom & Vibrance
-        HDRBloomEffect hdr = renderer.effectComposer.getEffect(HDRBloomEffect.class);
-        if (prefs.getBoolean("pro_shader_hdr", false)) {
-            if (hdr == null) hdr = new HDRBloomEffect();
-            hdr.setIntensity(prefs.getInt("pro_shader_hdr_val", 55) / 100.0f);
-            renderer.effectComposer.addEffect(hdr);
-        } else if (hdr != null) {
-            renderer.effectComposer.removeEffect(hdr);
-        }
+                FXAAEffect fxaa = renderer.effectComposer.getEffect(FXAAEffect.class);
+                if (prefs.getBoolean("pro_shader_fxaa", false)) {
+                    if (fxaa == null) renderer.effectComposer.addEffect(new FXAAEffect());
+                } else if (fxaa != null) {
+                    renderer.effectComposer.removeEffect(fxaa);
+                }
 
-        // 3. FXAA Anti-Aliasing
-        FXAAEffect fxaa = renderer.effectComposer.getEffect(FXAAEffect.class);
-        if (prefs.getBoolean("pro_shader_fxaa", true)) {
-            if (fxaa == null) renderer.effectComposer.addEffect(new FXAAEffect());
-        } else if (fxaa != null) {
-            renderer.effectComposer.removeEffect(fxaa);
-        }
+                ColorEffect color = renderer.effectComposer.getEffect(ColorEffect.class);
+                if (prefs.getBoolean("pro_shader_color", false)) {
+                    if (color == null) color = new ColorEffect();
+                    color.setBrightness(0.06f);
+                    color.setContrast(0.18f);
+                    color.setGamma(1.05f);
+                    renderer.effectComposer.addEffect(color);
+                } else if (color != null) {
+                    renderer.effectComposer.removeEffect(color);
+                }
 
-        // 4. Color Boost
-        ColorEffect color = renderer.effectComposer.getEffect(ColorEffect.class);
-        if (prefs.getBoolean("pro_shader_color", false)) {
-            if (color == null) color = new ColorEffect();
-            color.setBrightness(0.06f);
-            color.setContrast(0.18f);
-            color.setGamma(1.05f);
-            renderer.effectComposer.addEffect(color);
-        } else if (color != null) {
-            renderer.effectComposer.removeEffect(color);
-        }
+                CRTEffect crt = renderer.effectComposer.getEffect(CRTEffect.class);
+                if (prefs.getBoolean("pro_shader_crt", false)) {
+                    if (crt == null) renderer.effectComposer.addEffect(new CRTEffect());
+                } else if (crt != null) {
+                    renderer.effectComposer.removeEffect(crt);
+                }
 
-        // 5. CRT Retro Scanlines
-        CRTEffect crt = renderer.effectComposer.getEffect(CRTEffect.class);
-        if (prefs.getBoolean("pro_shader_crt", false)) {
-            if (crt == null) renderer.effectComposer.addEffect(new CRTEffect());
-        } else if (crt != null) {
-            renderer.effectComposer.removeEffect(crt);
-        }
-
-        // 6. Night Vision
-        NightVisionEffect night = renderer.effectComposer.getEffect(NightVisionEffect.class);
-        if (prefs.getBoolean("pro_shader_night", false)) {
-            if (night == null) renderer.effectComposer.addEffect(new NightVisionEffect());
-        } else if (night != null) {
-            renderer.effectComposer.removeEffect(night);
-        }
+                NightVisionEffect night = renderer.effectComposer.getEffect(NightVisionEffect.class);
+                if (prefs.getBoolean("pro_shader_night", false)) {
+                    if (night == null) renderer.effectComposer.addEffect(new NightVisionEffect());
+                } else if (night != null) {
+                    renderer.effectComposer.removeEffect(night);
+                }
+            } catch (Throwable ignored) {}
+        });
     }
 
     /**
@@ -1137,20 +1693,20 @@ public class WinlatorProSuite {
     public static void showFpsBenchmarkDialog(final Context context, final Container containerOrNull) {
         LinearLayout root = new LinearLayout(context);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(context, 14), dp(context, 12), dp(context, 14), dp(context, 12));
+        root.setPadding(dp(context, 12), dp(context, 10), dp(context, 12), dp(context, 10));
         root.setBackgroundColor(0xFF090D16);
 
         TextView title = new TextView(context);
         title.setText("📊 Проверка FPS: Vulkan vs OpenGL vs Hybrid DXVK + Шейдеры");
         title.setTextColor(Color.WHITE);
-        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14.5f);
         title.setTypeface(Typeface.DEFAULT_BOLD);
         root.addView(title);
 
         final TextView tvLiveStats = new TextView(context);
         tvLiveStats.setText("⏳ Инициализация графического пайплайна...");
         tvLiveStats.setTextColor(0xFF34D399);
-        tvLiveStats.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        tvLiveStats.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f);
         tvLiveStats.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
         tvLiveStats.setPadding(dp(context, 8), dp(context, 6), dp(context, 8), dp(context, 6));
         tvLiveStats.setBackground(roundedBg(0xFF111827, 0xFF10B981, 1, 8, context));
@@ -1180,9 +1736,7 @@ public class WinlatorProSuite {
         final float[] avgFps = {60f};
         final float[] minFps = {999f};
         final float[] maxFps = {0f};
-        final String[] gpuRendererName = {"Adreno / Mali GPU"};
 
-        // Живой аппаратный 3D/Shader стресс-холст
         final View stressView = new View(context) {
             private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
             private long lastFrameNs = System.nanoTime();
@@ -1198,7 +1752,6 @@ public class WinlatorProSuite {
                 lastFrameNs = now;
 
                 float instFps = 1000.0f / dtMs;
-                // Моделируем реальную нагрузку шейдеров и выбранного API
                 int mode = activeMode[0];
                 int objectsCount = (mode == 4) ? 550 : (mode == 2 ? 320 : 220);
 
@@ -1226,13 +1779,13 @@ public class WinlatorProSuite {
                 }
 
                 p.setColor(Color.WHITE);
-                p.setTextSize(dp(context, 13));
+                p.setTextSize(dp(context, 12));
                 p.setTypeface(Typeface.MONOSPACE);
                 canvas.drawText(
-                    String.format(Locale.US, "FPS: %.1f | AVG: %.1f | MIN: %.1f | MAX: %.1f | Кадр: %.1f мс",
-                        currentFps[0], avgFps[0], minFps[0] > 500 ? currentFps[0] : minFps[0], maxFps[0], dtMs),
-                    dp(context, 10),
-                    dp(context, 22),
+                    String.format(Locale.US, "FPS: %.1f | AVG: %.1f | MIN: %.1f | MAX: %.1f",
+                        currentFps[0], avgFps[0], minFps[0] > 500 ? currentFps[0] : minFps[0], maxFps[0]),
+                    dp(context, 8),
+                    dp(context, 20),
                     p
                 );
 
@@ -1242,7 +1795,7 @@ public class WinlatorProSuite {
 
         LinearLayout.LayoutParams canvasLp = new LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
-            dp(context, 190)
+            dp(context, 175)
         );
         stressView.setLayoutParams(canvasLp);
         root.addView(stressView);
@@ -1266,7 +1819,7 @@ public class WinlatorProSuite {
                 MemoryStatus m = queryMemoryStatus(context);
                 String apiTag = benchApis[activeMode[0]];
                 tvLiveStats.setText(String.format(Locale.US,
-                    "%s\n⚡ Текущий FPS: %.1f  |  Средний: %.1f  |  1%% Low: %.1f  |  Пик: %.1f\n💾 Свободно памяти: %s  |  🧠 ОЗУ: %s",
+                    "%s\n⚡ FPS: %.1f | Средний: %.1f | Мин: %.1f | Пик: %.1f\n💾 Память: %s | 🧠 ОЗУ: %s",
                     apiTag,
                     currentFps[0],
                     avgFps[0],
@@ -1287,9 +1840,9 @@ public class WinlatorProSuite {
 
         LinearLayout btnRow = new LinearLayout(context);
         btnRow.setOrientation(LinearLayout.HORIZONTAL);
-        btnRow.setPadding(0, dp(context, 10), 0, 0);
+        btnRow.setPadding(0, dp(context, 8), 0, 0);
 
-        Button btnApplyBest = createStyledButton(context, "✅ Применить этот режим к Контейнеру", 0xFF059669, 0xFF34D399);
+        Button btnApplyBest = createStyledButton(context, "✅ Применить этот режим", 0xFF059669, 0xFF34D399);
         btnApplyBest.setOnClickListener(v -> {
             if (containerOrNull != null) {
                 if (activeMode[0] == 2) {
@@ -1303,7 +1856,7 @@ public class WinlatorProSuite {
             alive[0] = false;
             dialog.dismiss();
         });
-        btnRow.addView(btnApplyBest, new LinearLayout.LayoutParams(0, dp(context, 38), 1.3f) {{
+        btnRow.addView(btnApplyBest, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.3f) {{
             rightMargin = dp(context, 6);
         }});
 
@@ -1312,7 +1865,7 @@ public class WinlatorProSuite {
             alive[0] = false;
             dialog.dismiss();
         });
-        btnRow.addView(btnClose, new LinearLayout.LayoutParams(0, dp(context, 38), 0.7f));
+        btnRow.addView(btnClose, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 0.7f));
 
         root.addView(btnRow);
         dialog.show();
@@ -1320,8 +1873,8 @@ public class WinlatorProSuite {
 
     /**
      * ============================================================================
-     * МОДУЛЬ 3 и 5: ЖИВАЯ ПАНЕЛЬ РАБОЧЕГО СТОЛА + ДЕТЕКТОР ЗАВИСАНИЙ +
-     * КАСТОМИЗАЦИЯ УПРАВЛЕНИЯ ПРЯМО НА ОВЕРЛЕЕ (СДВИНУТЬ СТИК/КНОПКУ, РАЗМЕР, ЗАМЕНА)
+     * МОДУЛЬ 3 и 5: ПЕРЕТАСКИВАЕМЫЙ ПАЛЬЦЕМ, КОМПАКТНЫЙ И ПОЛНОСТЬЮ СКРЫВАЕМЫЙ
+     * HUD И ОВЕРЛЕЙ ВНУТРИ РАБОЧЕГО СТОЛА WINDOWS (НЕ ЗАКРЫВАЕТ ПОЛЭКРАНА И ЯРЛЫКИ!)
      * ============================================================================
      */
     public static void attachLiveDesktopHudAndOverlayCustomizer(
@@ -1335,16 +1888,34 @@ public class WinlatorProSuite {
         ensureRichControlPresetsInstalled(activity);
         applySavedShadersToRenderer(activity);
 
-        // 1. ВЕРХНЯЯ ПАНЕЛЬ КОНТРОЛЯ РАБОЧЕГО СТОЛА, ЗАВИСАНИЙ И БЫСТРЫХ НАСТРОЕК
+        // 1. МИНИАТЮРНАЯ КНОПКА НА КРАЮ ЭКРАНА (когда HUD скрыт полностью)
+        final Button edgeRestoreTab = createStyledButton(activity, "🛠️", 0x990F172A, 0xFF38BDF8);
+        edgeRestoreTab.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f);
+        edgeRestoreTab.setPadding(dp(activity, 4), dp(activity, 2), dp(activity, 4), dp(activity, 2));
+        edgeRestoreTab.setMinHeight(dp(activity, 26));
+        edgeRestoreTab.setMinimumHeight(dp(activity, 26));
+        edgeRestoreTab.setVisibility(View.GONE);
+        FrameLayout.LayoutParams edgeLp = new FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            Gravity.TOP | Gravity.START
+        );
+        edgeLp.leftMargin = Math.max(dp(activity, 8), AppUtils.getScreenWidth() - dp(activity, 44));
+        edgeLp.topMargin = dp(activity, 6);
+        edgeRestoreTab.setLayoutParams(edgeLp);
+        makeViewDraggable(edgeRestoreTab, edgeRestoreTab, rootView);
+
+        // 2. КОМПАКТНЫЙ ПЕРЕТАСКИВАЕМЫЙ HUD (по умолчанию свёрнут в маленькую капсулу справа сверху, не закрывает ярлыки слева!)
         final LinearLayout topHudBar = new LinearLayout(activity);
         topHudBar.setOrientation(LinearLayout.VERTICAL);
-        topHudBar.setPadding(dp(activity, 8), dp(activity, 4), dp(activity, 8), dp(activity, 4));
-        topHudBar.setBackground(roundedBg(0xCC0B1120, 0xFF38BDF8, 1, 10, activity));
+        topHudBar.setPadding(dp(activity, 6), dp(activity, 3), dp(activity, 6), dp(activity, 3));
+        topHudBar.setBackground(roundedBg(0xBF0B1120, 0xFF38BDF8, 1, 10, activity));
         FrameLayout.LayoutParams topLp = new FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT,
             ViewGroup.LayoutParams.WRAP_CONTENT,
-            Gravity.TOP | Gravity.CENTER_HORIZONTAL
+            Gravity.TOP | Gravity.START
         );
+        topLp.leftMargin = Math.max(dp(activity, 120), AppUtils.getScreenWidth() - dp(activity, 230));
         topLp.topMargin = dp(activity, 4);
         topHudBar.setLayoutParams(topLp);
 
@@ -1355,44 +1926,67 @@ public class WinlatorProSuite {
         final TextView tvWatchdog = new TextView(activity);
         final String exeShortName = (launchedExecPathOrNull != null && !launchedExecPathOrNull.isEmpty())
             ? new File(launchedExecPathOrNull).getName()
-            : "Рабочий стол Windows";
-        tvWatchdog.setText("🟢 Рабочий стол виден • " + exeShortName + " • ОЗУ OK");
+            : "Рабочий стол";
+        tvWatchdog.setText("✥ 🛠️ " + exeShortName);
         tvWatchdog.setTextColor(0xFF34D399);
-        tvWatchdog.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+        tvWatchdog.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f);
         tvWatchdog.setTypeface(Typeface.DEFAULT_BOLD);
+        tvWatchdog.setPadding(dp(activity, 2), dp(activity, 2), dp(activity, 6), dp(activity, 2));
         statusLine.addView(tvWatchdog);
 
-        final Button btnCollapse = createStyledButton(activity, "▲ Скрыть кнопки", 0xFF1E293B, 0xFF475569);
-        btnCollapse.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10);
-        btnCollapse.setPadding(dp(activity, 8), dp(activity, 2), dp(activity, 8), dp(activity, 2));
-        LinearLayout.LayoutParams colLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(activity, 24));
-        colLp.leftMargin = dp(activity, 8);
-        statusLine.addView(btnCollapse, colLp);
-        topHudBar.addView(statusLine);
+        // Делаем капсулу HUD перетаскиваемой пальцем за текстовую полоску!
+        makeViewDraggable(topHudBar, tvWatchdog, rootView);
 
         final HorizontalScrollView actionsScroll = new HorizontalScrollView(activity);
         actionsScroll.setHorizontalScrollBarEnabled(false);
+        // По умолчанию скрываем широкую полосу кнопок, чтобы HUD был маленьким и не мешал!
+        actionsScroll.setVisibility(View.GONE);
+
+        final Button btnCollapse = createStyledButton(activity, "▾ Меню", 0xFF1E293B, 0xFF475569);
+        btnCollapse.setTextSize(TypedValue.COMPLEX_UNIT_SP, 9.5f);
+        btnCollapse.setMinHeight(dp(activity, 22));
+        btnCollapse.setMinimumHeight(dp(activity, 22));
+        btnCollapse.setPadding(dp(activity, 6), dp(activity, 1), dp(activity, 6), dp(activity, 1));
+        LinearLayout.LayoutParams colLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        colLp.rightMargin = dp(activity, 4);
+        statusLine.addView(btnCollapse, colLp);
+
+        final Button btnHideAll = createStyledButton(activity, "✕", 0xFF334155, 0xFF64748B);
+        btnHideAll.setTextSize(TypedValue.COMPLEX_UNIT_SP, 9.5f);
+        btnHideAll.setMinHeight(dp(activity, 22));
+        btnHideAll.setMinimumHeight(dp(activity, 22));
+        btnHideAll.setPadding(dp(activity, 5), dp(activity, 1), dp(activity, 5), dp(activity, 1));
+        btnHideAll.setOnClickListener(v -> {
+            topHudBar.setVisibility(View.GONE);
+            edgeRestoreTab.setVisibility(View.VISIBLE);
+        });
+        statusLine.addView(btnHideAll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        edgeRestoreTab.setOnClickListener(v -> {
+            edgeRestoreTab.setVisibility(View.GONE);
+            topHudBar.setVisibility(View.VISIBLE);
+        });
+
+        topHudBar.addView(statusLine);
+
         final LinearLayout actionsRow = new LinearLayout(activity);
         actionsRow.setOrientation(LinearLayout.HORIZONTAL);
         actionsRow.setPadding(0, dp(activity, 4), 0, 0);
 
-        // Кнопка 1: Лаунчер всех .EXE / .MSI прямо с Рабочего стола
-        Button btnDesktopLauncher = createStyledButton(activity, "🎮 Лаунчер .EXE/.MSI", 0xFF0284C7, 0xFF38BDF8);
+        Button btnDesktopLauncher = createStyledButton(activity, "🎮 Лаунчер", 0xFF0284C7, 0xFF38BDF8);
         btnDesktopLauncher.setOnClickListener(v -> showInSessionExePicker(activity, container));
-        actionsRow.addView(btnDesktopLauncher, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(activity, 30)) {{
-            rightMargin = dp(activity, 5);
+        actionsRow.addView(btnDesktopLauncher, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT) {{
+            rightMargin = dp(activity, 4);
         }});
 
-        // Кнопка 2: Графика / FPS / Скорость + Шейдеры
-        Button btnGfxStudio = createStyledButton(activity, "🎨 Графика / FPS / Шейдеры", 0xFF7C3AED, 0xFFA78BFA);
+        Button btnGfxStudio = createStyledButton(activity, "🎨 Графика/Шейдеры", 0xFF7C3AED, 0xFFA78BFA);
         btnGfxStudio.setOnClickListener(v -> showGraphicsFpsShaderStudioDialog(activity, container, activity));
-        actionsRow.addView(btnGfxStudio, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(activity, 30)) {{
-            rightMargin = dp(activity, 5);
+        actionsRow.addView(btnGfxStudio, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT) {{
+            rightMargin = dp(activity, 4);
         }});
 
-        // Кнопка 3: Выбор управления + Живая кастомизация оверлея (Сдвинуть стик/кнопку, увеличить/уменьшить, заменить)
         final LinearLayout overlayEditorBar = new LinearLayout(activity);
-        Button btnControls = createStyledButton(activity, "🕹️ Управление / Сдвинуть кнопки", 0xFF059669, 0xFF34D399);
+        Button btnControls = createStyledButton(activity, "🕹️ Оверлей", 0xFF059669, 0xFF34D399);
         btnControls.setOnClickListener(v -> {
             if (overlayEditorBar.getVisibility() == View.VISIBLE) {
                 overlayEditorBar.setVisibility(View.GONE);
@@ -1400,23 +1994,23 @@ public class WinlatorProSuite {
                 inputControlsView.invalidate();
             } else {
                 overlayEditorBar.setVisibility(View.VISIBLE);
+                actionsScroll.setVisibility(View.GONE);
+                btnCollapse.setText("▾ Меню");
             }
         });
-        actionsRow.addView(btnControls, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(activity, 30)) {{
-            rightMargin = dp(activity, 5);
+        actionsRow.addView(btnControls, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT) {{
+            rightMargin = dp(activity, 4);
         }});
 
-        // Кнопка 4: Тест FPS (Vulkan / OpenGL)
-        Button btnFpsTest = createStyledButton(activity, "📊 Тест FPS", 0xFFD97706, 0xFFFBBF24);
+        Button btnFpsTest = createStyledButton(activity, "📊 FPS", 0xFFD97706, 0xFFFBBF24);
         btnFpsTest.setOnClickListener(v -> showFpsBenchmarkDialog(activity, container));
-        actionsRow.addView(btnFpsTest, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(activity, 30)) {{
-            rightMargin = dp(activity, 5);
+        actionsRow.addView(btnFpsTest, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT) {{
+            rightMargin = dp(activity, 4);
         }});
 
-        // Кнопка 5: Диспетчер задач (если установщик или игра зависла)
-        Button btnTasks = createStyledButton(activity, "🛠️ Процессы / Зависания", 0xFFDC2626, 0xFFF87171);
+        Button btnTasks = createStyledButton(activity, "🛠️ Задачи", 0xFFDC2626, 0xFFF87171);
         btnTasks.setOnClickListener(v -> (new TaskManagerDialog(activity)).show());
-        actionsRow.addView(btnTasks, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(activity, 30)));
+        actionsRow.addView(btnTasks, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         actionsScroll.addView(actionsRow);
         topHudBar.addView(actionsScroll);
@@ -1424,19 +2018,20 @@ public class WinlatorProSuite {
         btnCollapse.setOnClickListener(v -> {
             if (actionsScroll.getVisibility() == View.VISIBLE) {
                 actionsScroll.setVisibility(View.GONE);
-                btnCollapse.setText("▼ Меню");
+                btnCollapse.setText("▾ Меню");
             } else {
                 actionsScroll.setVisibility(View.VISIBLE);
-                btnCollapse.setText("▲ Скрыть");
+                btnCollapse.setText("▴ Свернуть");
             }
         });
 
         rootView.addView(topHudBar);
+        rootView.addView(edgeRestoreTab);
 
-        // 2. ПАНЕЛЬ ЖИВОЙ КАСТОМИЗАЦИИ ОВЕРЛЕЯ УПРАВЛЕНИЯ ПРЯМО ПОВЕРХ ИГРЫ И РАБОЧЕГО СТОЛА
+        // 3. КОМПАКТНАЯ ПЕРЕТАСКИВАЕМАЯ И СКРЫВАЕМАЯ ПАНЕЛЬ ОВЕРЛЕЯ УПРАВЛЕНИЯ
         setupLiveOverlayCustomizerPanel(activity, rootView, overlayEditorBar, inputControlsView, touchpadView);
 
-        // 3. ЖИВОЙ МОНИТОР ПРОЦЕССОВ WINE/BOX64 И ДЕТЕКТОР ЗАВИСАНИЙ УСТАНОВЩИКОВ / ИГР
+        // 4. ПОТОКОБЕЗОПАСНЫЙ МОНИТОР ОКОН И ОЗУ (С XLock, БЕЗ КОНФЛИКТОВ И ВЫЛЕТОВ!)
         startLiveProcessAndFreezeWatchdog(activity, tvWatchdog, exeShortName);
     }
 
@@ -1445,25 +2040,26 @@ public class WinlatorProSuite {
         String[] labels = new String[list.size()];
         for (int i = 0; i < list.size(); i++) {
             DiscoveredProgram p = list.get(i);
-            labels[i] = p.category + " • " + p.name + " (" + p.dosPath + ")";
+            labels[i] = p.categoryLabel + " • " + p.name + " (" + p.dosPath + ")";
         }
+
         new AlertDialog.Builder(activity)
-            .setTitle("🎮 Запустить игру или установщик прямо на этом Рабочем столе")
+            .setTitle("🎮 Запустить игру / программу на этом Рабочем столе")
             .setItems(labels, (dialog, which) -> {
                 DiscoveredProgram chosen = list.get(which);
+                prepareGameFolderAndDependencies(activity, container, chosen.file);
                 pinExecutableToDesktopWithIcon(activity, container, chosen.file);
                 if (activity.getWinHandler() != null) {
-                    activity.getWinHandler().exec(chosen.dosPath);
-                    AppUtils.showToast(activity, "🚀 Запущено на Рабочем столе: " + chosen.name);
+                    String cmd = "C:\\windows\\system32\\cmd.exe";
+                    String args = "/c start \"\" /D \"" + chosen.workingDosDir + "\" \"" + chosen.dosPath + "\"";
+                    activity.getWinHandler().exec(cmd, args);
+                    AppUtils.showToast(activity, "🚀 Запущено с рабочей папкой: " + chosen.name);
                 }
             })
             .setNegativeButton("Закрыть", null)
             .show();
     }
 
-    /**
-     * Создаёт 6 готовых профилей управления «на любой вкус и цвет» и сохраняет их в InputControlsManager.
-     */
     public static void ensureRichControlPresetsInstalled(Context context) {
         try {
             InputControlsManager manager = new InputControlsManager(context);
@@ -1491,8 +2087,7 @@ public class WinlatorProSuite {
                 p.setName("🏎️ Гонки и Аркады (Руль + Газ + Тормоз + Нитро)");
                 p.save();
             }
-        } catch (Exception ignored) {
-        }
+        } catch (Throwable ignored) {}
     }
 
     private static void setupLiveOverlayCustomizerPanel(
@@ -1503,30 +2098,74 @@ public class WinlatorProSuite {
         final TouchpadView touchpadView
     ) {
         panel.setOrientation(LinearLayout.VERTICAL);
-        panel.setPadding(dp(activity, 10), dp(activity, 8), dp(activity, 10), dp(activity, 8));
-        panel.setBackground(roundedBg(0xE60F172A, 0xFF10B981, 2, 12, activity));
+        panel.setPadding(dp(activity, 8), dp(activity, 5), dp(activity, 8), dp(activity, 5));
+        panel.setBackground(roundedBg(0xD90F172A, 0xFF10B981, 1, 10, activity));
         panel.setVisibility(View.GONE);
 
         FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.WRAP_CONTENT,
-            Gravity.BOTTOM
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            Gravity.TOP | Gravity.START
         );
-        lp.setMargins(dp(activity, 10), dp(activity, 10), dp(activity, 10), dp(activity, 10));
+        lp.leftMargin = dp(activity, 16);
+        lp.topMargin = Math.max(dp(activity, 40), AppUtils.getScreenHeight() - dp(activity, 130));
         panel.setLayoutParams(lp);
 
-        TextView tvHeader = new TextView(activity);
-        tvHeader.setText("🕹️ Управление на любой вкус + Живая Кастомизация Оверлея (Тапните на любой стик или кнопку на экране, чтобы сдвинуть пальцем, увеличить/уменьшить или заменить клавишу!)");
-        tvHeader.setTextColor(0xFF34D399);
-        tvHeader.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f);
-        tvHeader.setTypeface(Typeface.DEFAULT_BOLD);
-        panel.addView(tvHeader);
+        // Верхняя строка панели оверлея: ручка для перетаскивания пальцем + Свернуть + Закрыть
+        LinearLayout headerBar = new LinearLayout(activity);
+        headerBar.setOrientation(LinearLayout.HORIZONTAL);
+        headerBar.setGravity(Gravity.CENTER_VERTICAL);
 
-        // Ряд 1: Выбор готового профиля управления + Включение режима перетаскивания пальцем
+        final TextView tvDragHandle = new TextView(activity);
+        tvDragHandle.setText("✥ 🕹️ Оверлей (тяните сюда пальцем)");
+        tvDragHandle.setTextColor(0xFF34D399);
+        tvDragHandle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f);
+        tvDragHandle.setTypeface(Typeface.DEFAULT_BOLD);
+        tvDragHandle.setPadding(dp(activity, 2), dp(activity, 2), dp(activity, 8), dp(activity, 2));
+        headerBar.addView(tvDragHandle);
+        makeViewDraggable(panel, tvDragHandle, rootView);
+
+        final LinearLayout bodyContainer = new LinearLayout(activity);
+        bodyContainer.setOrientation(LinearLayout.VERTICAL);
+
+        final Button btnMinOverlay = createStyledButton(activity, "➖ Частично скрыть", 0xFF1E293B, 0xFF475569);
+        btnMinOverlay.setTextSize(TypedValue.COMPLEX_UNIT_SP, 9.5f);
+        btnMinOverlay.setMinHeight(dp(activity, 22));
+        btnMinOverlay.setMinimumHeight(dp(activity, 22));
+        btnMinOverlay.setPadding(dp(activity, 6), dp(activity, 1), dp(activity, 6), dp(activity, 1));
+        btnMinOverlay.setOnClickListener(v -> {
+            if (bodyContainer.getVisibility() == View.VISIBLE) {
+                bodyContainer.setVisibility(View.GONE);
+                btnMinOverlay.setText("➕ Развернуть");
+            } else {
+                bodyContainer.setVisibility(View.VISIBLE);
+                btnMinOverlay.setText("➖ Частично скрыть");
+            }
+        });
+        headerBar.addView(btnMinOverlay, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT) {{
+            rightMargin = dp(activity, 4);
+        }});
+
+        Button btnCloseOverlay = createStyledButton(activity, "✕ Скрыть весь", 0xFF334155, 0xFF64748B);
+        btnCloseOverlay.setTextSize(TypedValue.COMPLEX_UNIT_SP, 9.5f);
+        btnCloseOverlay.setMinHeight(dp(activity, 22));
+        btnCloseOverlay.setMinimumHeight(dp(activity, 22));
+        btnCloseOverlay.setPadding(dp(activity, 6), dp(activity, 1), dp(activity, 6), dp(activity, 1));
+        btnCloseOverlay.setOnClickListener(v -> {
+            inputControlsView.setEditMode(false);
+            if (inputControlsView.getProfile() != null) inputControlsView.getProfile().save();
+            panel.setVisibility(View.GONE);
+            inputControlsView.invalidate();
+        });
+        headerBar.addView(btnCloseOverlay, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        panel.addView(headerBar);
+
+        // Ряд 1: Профили управления
         HorizontalScrollView hsvPresets = new HorizontalScrollView(activity);
+        hsvPresets.setHorizontalScrollBarEnabled(false);
         LinearLayout rowPresets = new LinearLayout(activity);
         rowPresets.setOrientation(LinearLayout.HORIZONTAL);
-        rowPresets.setPadding(0, dp(activity, 6), 0, dp(activity, 6));
+        rowPresets.setPadding(0, dp(activity, 4), 0, dp(activity, 4));
 
         final InputControlsManager icm = new InputControlsManager(activity);
         final ArrayList<ControlsProfile> profiles = icm.getProfiles(false);
@@ -1538,29 +2177,30 @@ public class WinlatorProSuite {
                 inputControlsView.setProfile(prof);
                 inputControlsView.setShowTouchscreenControls(true);
                 inputControlsView.invalidate();
-                AppUtils.showToast(activity, "🕹️ Включено управление: " + prof.getName());
+                AppUtils.showToast(activity, "🕹️ Профиль: " + prof.getName());
             });
-            rowPresets.addView(bProf, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(activity, 32)) {{
-                rightMargin = dp(activity, 6);
+            rowPresets.addView(bProf, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT) {{
+                rightMargin = dp(activity, 5);
             }});
         }
 
-        Button bHideControls = createStyledButton(activity, "🚫 Скрыть оверлей", 0xFF334155, 0xFF64748B);
+        Button bHideControls = createStyledButton(activity, "🚫 Выкл кнопки", 0xFF334155, 0xFF64748B);
         bHideControls.setOnClickListener(v -> {
             inputControlsView.setEditMode(false);
             inputControlsView.setVisibility(View.GONE);
             inputControlsView.invalidate();
         });
-        rowPresets.addView(bHideControls, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(activity, 32)));
+        rowPresets.addView(bHideControls, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         hsvPresets.addView(rowPresets);
-        panel.addView(hsvPresets);
+        bodyContainer.addView(hsvPresets);
 
-        // Ряд 2: Кнопки живого редактирования выбранного стика или кнопки прямо на экране!
+        // Ряд 2: Компактные инструменты редактирования кнопок
         HorizontalScrollView hsvTools = new HorizontalScrollView(activity);
+        hsvTools.setHorizontalScrollBarEnabled(false);
         LinearLayout rowTools = new LinearLayout(activity);
         rowTools.setOrientation(LinearLayout.HORIZONTAL);
 
-        final Button btnToggleDrag = createStyledButton(activity, "✏️ Режим Сдвига Пальцем: ВЫКЛ", 0xFF0284C7, 0xFF38BDF8);
+        final Button btnToggleDrag = createStyledButton(activity, "✏️ Сдвиг: ВЫКЛ", 0xFF0284C7, 0xFF38BDF8);
         btnToggleDrag.setOnClickListener(v -> {
             if (inputControlsView.getProfile() == null && !profiles.isEmpty()) {
                 inputControlsView.setProfile(profiles.get(0));
@@ -1568,16 +2208,15 @@ public class WinlatorProSuite {
             inputControlsView.setVisibility(View.VISIBLE);
             boolean nextEdit = !inputControlsView.isEditMode();
             inputControlsView.setEditMode(nextEdit);
-            btnToggleDrag.setText(nextEdit ? "✏️ Сдвиг Пальцем: ВКЛ (Тяните любую кнопку!)" : "✏️ Режим Сдвига Пальцем: ВЫКЛ");
+            btnToggleDrag.setText(nextEdit ? "✏️ Сдвиг: ВКЛ" : "✏️ Сдвиг: ВЫКЛ");
             btnToggleDrag.setBackground(roundedBg(nextEdit ? 0xFFDC2626 : 0xFF0284C7, 0xFFF87171, 1, 8, activity));
             inputControlsView.invalidate();
         });
-        rowTools.addView(btnToggleDrag, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(activity, 34)) {{
-            rightMargin = dp(activity, 6);
+        rowTools.addView(btnToggleDrag, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT) {{
+            rightMargin = dp(activity, 5);
         }});
 
-        // Увеличить размер выбранного стика / кнопки
-        Button btnBigger = createStyledButton(activity, "➕ Увеличить (+15%)", 0xFF059669, 0xFF34D399);
+        Button btnBigger = createStyledButton(activity, "➕ Размер", 0xFF059669, 0xFF34D399);
         btnBigger.setOnClickListener(v -> {
             ControlElement el = inputControlsView.getSelectedElement();
             if (el != null) {
@@ -1585,44 +2224,37 @@ public class WinlatorProSuite {
                 if (inputControlsView.getProfile() != null) inputControlsView.getProfile().save();
                 inputControlsView.invalidate();
             } else {
-                AppUtils.showToast(activity, "Сначала включите «✏️ Сдвиг Пальцем» и нажмите на нужную кнопку или стик!");
+                AppUtils.showToast(activity, "Включите «✏️ Сдвиг» и нажмите на кнопку/стик!");
             }
         });
-        rowTools.addView(btnBigger, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(activity, 34)) {{
-            rightMargin = dp(activity, 6);
+        rowTools.addView(btnBigger, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT) {{
+            rightMargin = dp(activity, 5);
         }});
 
-        // Уменьшить размер выбранного стика / кнопки
-        Button btnSmaller = createStyledButton(activity, "➖ Уменьшить (-15%)", 0xFF059669, 0xFF34D399);
+        Button btnSmaller = createStyledButton(activity, "➖ Размер", 0xFF059669, 0xFF34D399);
         btnSmaller.setOnClickListener(v -> {
             ControlElement el = inputControlsView.getSelectedElement();
             if (el != null) {
                 el.setScale(Math.max(0.45f, el.getScale() - 0.15f));
                 if (inputControlsView.getProfile() != null) inputControlsView.getProfile().save();
                 inputControlsView.invalidate();
-            } else {
-                AppUtils.showToast(activity, "Сначала нажмите на кнопку или стик на экране!");
             }
         });
-        rowTools.addView(btnSmaller, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(activity, 34)) {{
-            rightMargin = dp(activity, 6);
+        rowTools.addView(btnSmaller, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT) {{
+            rightMargin = dp(activity, 5);
         }});
 
-        // Заменить тип (Кнопка <-> Стик <-> Крестовина <-> Тачпад)
-        Button btnSwapType = createStyledButton(activity, "🔄 Заменить: Кнопка/Стик/D-Pad", 0xFF7C3AED, 0xFFA78BFA);
+        Button btnSwapType = createStyledButton(activity, "🔄 Тип", 0xFF7C3AED, 0xFFA78BFA);
         btnSwapType.setOnClickListener(v -> {
             final ControlElement el = inputControlsView.getSelectedElement();
-            if (el == null) {
-                AppUtils.showToast(activity, "Нажмите на элемент на оверлее для его замены!");
-                return;
-            }
+            if (el == null) return;
             final String[] typeNames = {
-                "🕹️ Аналоговый Стик (STICK WASD)",
-                "➕ Крестовина (D-PAD WASD)",
-                "🔘 Обычная Кнопка (BUTTON)",
-                "🖱️ Тачпад Мыши (TRACKPAD)",
-                "🎡 Радиальное Меню Клавиш (RADIAL_MENU)",
-                "🔢 Полоса Клавиш 0–9 (RANGE_BUTTON)"
+                "🕹️ Аналоговый Стик (STICK)",
+                "➕ Крестовина (D-PAD)",
+                "🔘 Кнопка (BUTTON)",
+                "🖱️ Тачпад (TRACKPAD)",
+                "🎡 Радиальное Меню (RADIAL_MENU)",
+                "🔢 Полоса 0–9 (RANGE_BUTTON)"
             };
             final ControlElement.Type[] types = {
                 ControlElement.Type.STICK,
@@ -1633,7 +2265,7 @@ public class WinlatorProSuite {
                 ControlElement.Type.RANGE_BUTTON
             };
             new AlertDialog.Builder(activity)
-                .setTitle("🔄 Чем заменить выбранный элемент на оверлее?")
+                .setTitle("🔄 Выберите тип элемента")
                 .setItems(typeNames, (d, which) -> {
                     el.setType(types[which]);
                     if (inputControlsView.getProfile() != null) inputControlsView.getProfile().save();
@@ -1641,39 +2273,33 @@ public class WinlatorProSuite {
                 })
                 .show();
         });
-        rowTools.addView(btnSwapType, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(activity, 34)) {{
-            rightMargin = dp(activity, 6);
+        rowTools.addView(btnSwapType, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT) {{
+            rightMargin = dp(activity, 5);
         }});
 
-        // Заменить назначенную клавишу / кнопку мыши / геймпада
-        Button btnRebindKey = createStyledButton(activity, "⌨️ Заменить клавишу / бинд", 0xFFD97706, 0xFFFBBF24);
+        Button btnRebindKey = createStyledButton(activity, "⌨️ Клавиша", 0xFFD97706, 0xFFFBBF24);
         btnRebindKey.setOnClickListener(v -> {
             final ControlElement el = inputControlsView.getSelectedElement();
-            if (el == null) {
-                AppUtils.showToast(activity, "Сначала выберите кнопку на оверлее!");
-                return;
-            }
+            if (el == null) return;
             final Binding[] allBindings = Binding.values();
             String[] bNames = new String[allBindings.length];
             for (int i = 0; i < allBindings.length; i++) {
                 bNames[i] = allBindings[i].toString() + " (" + allBindings[i].name() + ")";
             }
             new AlertDialog.Builder(activity)
-                .setTitle("⌨️ Выберите новую клавишу или кнопку мыши / геймпада")
+                .setTitle("⌨️ Выберите клавишу / кнопку")
                 .setItems(bNames, (d, which) -> {
                     el.setBindingAt(0, allBindings[which]);
                     if (inputControlsView.getProfile() != null) inputControlsView.getProfile().save();
                     inputControlsView.invalidate();
-                    AppUtils.showToast(activity, "✅ Назначено: " + allBindings[which].toString());
                 })
                 .show();
         });
-        rowTools.addView(btnRebindKey, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(activity, 34)) {{
-            rightMargin = dp(activity, 6);
+        rowTools.addView(btnRebindKey, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT) {{
+            rightMargin = dp(activity, 5);
         }});
 
-        // Добавить новую кнопку/стик на оверлей
-        Button btnAddEl = createStyledButton(activity, "➕ Добавить кнопку/стик", 0xFF0284C7, 0xFF38BDF8);
+        Button btnAddEl = createStyledButton(activity, "➕ Добавить", 0xFF0284C7, 0xFF38BDF8);
         btnAddEl.setOnClickListener(v -> {
             if (inputControlsView.getProfile() == null && !profiles.isEmpty()) {
                 inputControlsView.setProfile(profiles.get(0));
@@ -1682,107 +2308,77 @@ public class WinlatorProSuite {
             inputControlsView.addElement();
             inputControlsView.invalidate();
         });
-        rowTools.addView(btnAddEl, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(activity, 34)) {{
-            rightMargin = dp(activity, 6);
+        rowTools.addView(btnAddEl, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT) {{
+            rightMargin = dp(activity, 5);
         }});
 
-        // Удалить выбранную кнопку
-        Button btnDelEl = createStyledButton(activity, "🗑️ Удалить", 0xFFDC2626, 0xFFF87171);
+        Button btnDelEl = createStyledButton(activity, "🗑️", 0xFFDC2626, 0xFFF87171);
         btnDelEl.setOnClickListener(v -> {
             inputControlsView.removeElement();
             inputControlsView.invalidate();
         });
-        rowTools.addView(btnDelEl, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(activity, 34)) {{
-            rightMargin = dp(activity, 6);
+        rowTools.addView(btnDelEl, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT) {{
+            rightMargin = dp(activity, 5);
         }});
 
-        // Прозрачность оверлея
-        Button btnOpacity = createStyledButton(activity, "👁️ Прозрачность", 0xFF334155, 0xFF64748B);
+        Button btnOpacity = createStyledButton(activity, "👁️ Прозр.", 0xFF334155, 0xFF64748B);
         btnOpacity.setOnClickListener(v -> {
             float cur = inputControlsView.getOverlayOpacity();
             float next = (cur >= 0.85f) ? 0.25f : (cur + 0.2f);
             inputControlsView.setOverlayOpacity(next);
             inputControlsView.invalidate();
-            AppUtils.showToast(activity, "👁️ Прозрачность оверлея: " + Math.round(next * 100) + "%");
         });
-        rowTools.addView(btnOpacity, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(activity, 34)) {{
-            rightMargin = dp(activity, 6);
-        }});
-
-        Button btnDoneOverlay = createStyledButton(activity, "✅ Готово (Сохранить)", 0xFF059669, 0xFF34D399);
-        btnDoneOverlay.setOnClickListener(v -> {
-            inputControlsView.setEditMode(false);
-            if (inputControlsView.getProfile() != null) inputControlsView.getProfile().save();
-            panel.setVisibility(View.GONE);
-            inputControlsView.invalidate();
-        });
-        rowTools.addView(btnDoneOverlay, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(activity, 34)));
+        rowTools.addView(btnOpacity, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         hsvTools.addView(rowTools);
-        panel.addView(hsvTools);
+        bodyContainer.addView(hsvTools);
+        panel.addView(bodyContainer);
         rootView.addView(panel);
     }
 
     /**
-     * Постоянно отслеживает состояние окон Рабочего стола Windows и процессов Wine/Box64,
-     * чтобы если установщик или игра зависла при открытии из проводника — пользователь
-     * сразу видел причину на экране Рабочего стола!
+     * Потокобезопасный монитор состояния Рабочего стола:
+     * использует XLock при обходе окон (исключает ConcurrentModificationException при открытии/закрытии окон!).
      */
     private static void startLiveProcessAndFreezeWatchdog(
         final XServerDisplayActivity activity,
         final TextView tvWatchdog,
         final String targetExeName
     ) {
+        stopWatchdog();
         final Handler handler = new Handler(Looper.getMainLooper());
-        final long startTimeMs = System.currentTimeMillis();
-        final int[] lastWindowUpdateTick = {0};
-        final long[] lastFrameChangeMs = {System.currentTimeMillis()};
-
-        if (activity.getXServer() != null && activity.getXServer().windowManager != null) {
-            activity.getXServer().windowManager.addOnWindowModificationListener(
-                new com.winlator.xserver.WindowManager.OnWindowModificationListener() {
-                    @Override
-                    public void onUpdateWindowContent(Window window) {
-                        lastWindowUpdateTick[0]++;
-                        lastFrameChangeMs[0] = System.currentTimeMillis();
-                    }
-                }
-            );
-        }
+        activeWatchdogHandler = handler;
 
         final Runnable checkTask = new Runnable() {
             @Override
             public void run() {
-                if (activity.isFinishing() || activity.isDestroyed()) return;
-                long now = System.currentTimeMillis();
-                long idleSec = (now - lastFrameChangeMs[0]) / 1000L;
-                long upSec = (now - startTimeMs) / 1000L;
-
+                if (activeWatchdogHandler != handler || activity == null || activity.isFinishing() || activity.isDestroyed()) {
+                    return;
+                }
                 int mappedWindows = 0;
                 try {
-                    if (activity.getXServer() != null && activity.getXServer().windowManager != null &&
-                        activity.getXServer().windowManager.rootWindow != null) {
-                        for (Window w : activity.getXServer().windowManager.rootWindow.getChildren()) {
-                            if (w.attributes.isMapped() && w.getWidth() > 32) mappedWindows++;
+                    XServer xs = activity.getXServer();
+                    if (xs != null && xs.windowManager != null && xs.windowManager.rootWindow != null) {
+                        try (XLock lock = xs.lock(XServer.Lockable.WINDOW_MANAGER)) {
+                            for (Window w : xs.windowManager.rootWindow.getChildren()) {
+                                if (w != null && w.attributes.isMapped() && w.getWidth() > 32) {
+                                    mappedWindows++;
+                                }
+                            }
                         }
                     }
-                } catch (Exception ignored) {}
+                } catch (Throwable ignored) {}
 
                 MemoryStatus mem = queryMemoryStatus(activity);
-                String ramShort = (mem.freeRamBytes / (1024L * 1024L)) + " МБ";
+                long ramMb = mem.freeRamBytes / (1024L * 1024L);
+                tvWatchdog.setText("✥ 🛠️ " + targetExeName + " • ОЗУ " + ramMb + "МБ (Окон:" + mappedWindows + ")");
+                tvWatchdog.setTextColor(0xFF34D399);
 
-                if (idleSec > 15 && upSec > 15) {
-                    tvWatchdog.setText("⚠️ Нет новых кадров " + idleSec + " сек (" + targetExeName +
-                        ") • Окон: " + mappedWindows + " • ОЗУ: " + ramShort + " (Нажмите «Процессы» если установщик завис)");
-                    tvWatchdog.setTextColor(0xFFFACC15);
-                } else {
-                    tvWatchdog.setText("🟢 Рабочий стол виден • " + targetExeName +
-                        " (Окон: " + mappedWindows + " | ОЗУ своб: " + ramShort + ")");
-                    tvWatchdog.setTextColor(0xFF34D399);
+                if (activeWatchdogHandler == handler) {
+                    handler.postDelayed(this, 3000);
                 }
-                handler.postDelayed(this, 1500);
             }
         };
-        handler.postDelayed(checkTask, 1500);
+        handler.postDelayed(checkTask, 2500);
     }
 }

@@ -83,10 +83,9 @@ public abstract class BaseFileManagerFragment<T> extends Fragment {
         pasteButton.setOnClickListener((v) -> pasteFiles());
 
         ViewGroup proHeader = rootView.findViewById(R.id.FLProTopHeader);
-        if (proHeader != null && getActivity() != null) {
-            Container defaultCont = manager.ensureDefaultHybridContainer();
+        if (proHeader != null) {
             proHeader.removeAllViews();
-            proHeader.addView(WinlatorProSuite.buildTopProDashboardBar(getActivity(), defaultCont, this::refreshContent));
+            proHeader.setVisibility(View.GONE);
         }
 
         if (itemDecoration == null) {

@@ -20,6 +20,7 @@ import java.util.Collections;
 import java.util.concurrent.Executors;
 
 public class ContainerManager {
+    private static final Object CREATE_LOCK = new Object();
     private final ArrayList<Container> containers = new ArrayList<>();
     private int maxContainerId = 0;
     private final File homeDir;
@@ -233,9 +234,17 @@ public class ContainerManager {
         return null;
     }
 
-    public synchronized Container ensureDefaultHybridContainer() {
-        if (!RootFS.find(context).isValid()) return null;
+    public Container getDefaultOrFirstContainer() {
         if (!containers.isEmpty()) return containers.get(0);
+        loadContainers();
+        return !containers.isEmpty() ? containers.get(0) : null;
+    }
+
+    public Container ensureDefaultHybridContainer() {
+        synchronized (CREATE_LOCK) {
+            if (!RootFS.find(context).isValid()) return null;
+            loadContainers();
+            if (!containers.isEmpty()) return containers.get(0);
 
         try {
             File extDiskF = new File(context.getExternalFilesDir(null), "Winlator_Disk_F");
@@ -265,36 +274,13 @@ public class ContainerManager {
                     FileUtils.copy(context, "steam/SteamSetup.exe", steamExeInDiskF);
                 }
 
-                File desktopDir = new File(created.getUserDir(), "Desktop");
-                if (!desktopDir.isDirectory()) desktopDir.mkdirs();
-
-                try {
-                    android.graphics.Bitmap iconBmp = com.winlator.win32.PEParser.extractIcon(steamExeInGames);
-                    if (iconBmp != null) {
-                        File iconDir = created.getIconsDir(64);
-                        if (!iconDir.isDirectory()) iconDir.mkdirs();
-                        com.winlator.core.ImageUtils.save(iconBmp, new File(iconDir, "SteamSetup.png"), android.graphics.Bitmap.CompressFormat.PNG, 100);
-                    }
-                }
-                catch (Exception ignored) {}
-
-                File desktopShortcut = new File(desktopDir, "SteamSetup.desktop");
-                String desktopContent = "[Desktop Entry]\n"
-                    + "Name=SteamSetup\n"
-                    + "Exec=env WINEPREFIX=\"" + RootFS.find(context).getRootDir() + RootFS.WINEPREFIX + "\" wine C:\\\\Games\\\\SteamSetup.exe\n"
-                    + "Type=Application\n"
-                    + "StartupNotify=true\n"
-                    + "Icon=SteamSetup\n"
-                    + "\n[Extra Data]\n"
-                    + "container_id=" + created.id + "\n"
-                    + "dxwrapper=dxvk\n"
-                    + "dxwrapperConfig=version=" + com.winlator.core.DefaultVersion.HYBRID_DXVK + ",framerate=0,maxDeviceMemory=4096\n";
-                FileUtils.writeString(desktopShortcut, desktopContent);
+                com.winlator.pro.WinlatorProSuite.pinExecutableToDesktopWithIcon(context, created, steamExeInGames);
             }
             return created;
         }
         catch (JSONException e) {
             return null;
+        }
         }
     }
 
@@ -303,41 +289,26 @@ public class ContainerManager {
         File srcFile = FileUtils.getFileFromUri(context, uri);
         if (srcFile == null || !srcFile.isFile()) return null;
 
-        String filename = com.winlator.core.StringUtils.clearReservedChars(FileUtils.getUriDisplayName(context, uri));
-        if (filename.isEmpty()) filename = srcFile.getName();
-        if (!filename.toLowerCase(java.util.Locale.ENGLISH).endsWith(".exe") &&
-            !filename.toLowerCase(java.util.Locale.ENGLISH).endsWith(".msi") &&
-            !filename.toLowerCase(java.util.Locale.ENGLISH).endsWith(".bat")) {
-            filename = filename + ".exe";
-        }
-
-        File gamesDir = new File(targetContainer.getRootDir(), ".wine/drive_c/Games");
-        if (!gamesDir.isDirectory()) gamesDir.mkdirs();
-        File dstExe = new File(gamesDir, filename);
-        if (!srcFile.getAbsolutePath().equals(dstExe.getAbsolutePath())) {
-            if (!FileUtils.copy(srcFile, dstExe)) return null;
-        }
-
-        File desktopDir = new File(targetContainer.getUserDir(), "Desktop");
-        if (!desktopDir.isDirectory()) desktopDir.mkdirs();
-        String baseName = FileUtils.getBasename(filename);
-        try {
-            android.graphics.Bitmap iconBmp = com.winlator.win32.PEParser.extractIcon(dstExe);
-            if (iconBmp != null) {
-                File iconDir = targetContainer.getIconsDir(64);
-                if (!iconDir.isDirectory()) iconDir.mkdirs();
-                com.winlator.core.ImageUtils.save(iconBmp, new File(iconDir, baseName + ".png"), android.graphics.Bitmap.CompressFormat.PNG, 100);
+        File dstExe = srcFile;
+        String cachePath = context.getCacheDir().getAbsolutePath();
+        if (srcFile.getAbsolutePath().startsWith(cachePath)) {
+            String filename = com.winlator.core.StringUtils.clearReservedChars(FileUtils.getUriDisplayName(context, uri));
+            if (filename.isEmpty()) filename = srcFile.getName();
+            if (!filename.toLowerCase(java.util.Locale.ENGLISH).endsWith(".exe") &&
+                !filename.toLowerCase(java.util.Locale.ENGLISH).endsWith(".msi") &&
+                !filename.toLowerCase(java.util.Locale.ENGLISH).endsWith(".bat")) {
+                filename = filename + ".exe";
+            }
+            File gamesDir = new File(targetContainer.getRootDir(), ".wine/drive_c/Games");
+            if (!gamesDir.isDirectory()) gamesDir.mkdirs();
+            dstExe = new File(gamesDir, filename);
+            if (!srcFile.getAbsolutePath().equals(dstExe.getAbsolutePath())) {
+                if (!FileUtils.copy(srcFile, dstExe)) return null;
             }
         }
-        catch (Exception ignored) {}
-        File desktopShortcut = new File(desktopDir, baseName + ".desktop");
-        String desktopContent = "[Desktop Entry]\n"
-            + "Name=" + baseName + "\n"
-            + "Exec=env WINEPREFIX=\"" + RootFS.find(context).getRootDir() + RootFS.WINEPREFIX + "\" wine C:\\\\Games\\\\" + filename + "\n"
-            + "Type=Application\n"
-            + "StartupNotify=true\n"
-            + "Icon=" + baseName + "\n";
-        FileUtils.writeString(desktopShortcut, desktopContent);
+
+        com.winlator.pro.WinlatorProSuite.prepareGameFolderAndDependencies(context, targetContainer, dstExe);
+        com.winlator.pro.WinlatorProSuite.pinExecutableToDesktopWithIcon(context, targetContainer, dstExe);
         return dstExe;
     }
 
