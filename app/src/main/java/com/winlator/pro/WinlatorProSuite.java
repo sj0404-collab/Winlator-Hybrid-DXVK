@@ -1760,8 +1760,9 @@ public class WinlatorProSuite {
 
                 int mappedWindows = 0;
                 try {
-                    if (activity.getXServer() != null && activity.getXServer().windowManager != null) {
-                        for (Window w : activity.getXServer().windowManager.getWindows()) {
+                    if (activity.getXServer() != null && activity.getXServer().windowManager != null &&
+                        activity.getXServer().windowManager.rootWindow != null) {
+                        for (Window w : activity.getXServer().windowManager.rootWindow.getChildren()) {
                             if (w.attributes.isMapped() && w.getWidth() > 32) mappedWindows++;
                         }
                     }
