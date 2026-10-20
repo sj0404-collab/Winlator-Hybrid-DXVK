@@ -31,6 +31,7 @@ import com.winlator.container.ContainerManager;
 import com.winlator.contentdialog.ContentDialog;
 import com.winlator.contentdialog.StorageInfoDialog;
 import com.winlator.core.PreloaderDialog;
+import com.winlator.pro.WinlatorProSuite;
 import com.winlator.xenvironment.RootFS;
 
 import java.util.ArrayList;
@@ -53,6 +54,12 @@ public class ContainersFragment extends Fragment {
     public void onViewCreated(@NonNull View view, @Nullable Bundle savedInstanceState) {
         super.onViewCreated(view, savedInstanceState);
         manager = new ContainerManager(getContext());
+        ViewGroup proHeader = view.findViewById(R.id.FLProTopHeader);
+        if (proHeader != null && getActivity() != null) {
+            Container target = manager.ensureDefaultHybridContainer();
+            proHeader.removeAllViews();
+            proHeader.addView(WinlatorProSuite.buildTopProDashboardBar(getActivity(), target, this::loadContainersList));
+        }
         loadContainersList();
         ((AppCompatActivity)getActivity()).getSupportActionBar().setTitle(R.string.containers);
     }
@@ -211,9 +218,7 @@ public class ContainersFragment extends Fragment {
 
         private void runContainer(Container container) {
             Activity activity = getActivity();
-            Intent intent = new Intent(activity, XServerDisplayActivity.class);
-            intent.putExtra("container_id", container.id);
-            activity.startActivity(intent);
+            WinlatorProSuite.launchWithMemoryCheck(activity, container, null);
         }
     }
 }

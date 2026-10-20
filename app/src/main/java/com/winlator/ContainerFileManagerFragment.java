@@ -30,6 +30,7 @@ import com.winlator.core.AppUtils;
 import com.winlator.core.FileUtils;
 import com.winlator.core.StringUtils;
 import com.winlator.core.WineUtils;
+import com.winlator.pro.WinlatorProSuite;
 import com.winlator.win32.MSIcon;
 import com.winlator.win32.MSLink;
 import com.winlator.win32.PEParser;
@@ -112,6 +113,8 @@ public class ContainerFileManagerFragment extends BaseFileManagerFragment<FileIn
         Context context = getContext();
         File favoritesDir = new File(container.getUserDir(), context.getString(R.string.favorites));
         File targetFile = new File(favoritesDir, FileUtils.getBasename(file.name)+".lnk");
+
+        WinlatorProSuite.pinExecutableToDesktopWithIcon(context, container, file.toFile());
 
         if (!targetFile.exists()) {
             MSLink.LinkInfo linkInfo = new MSLink.LinkInfo();
@@ -377,10 +380,7 @@ public class ContainerFileManagerFragment extends BaseFileManagerFragment<FileIn
             boolean isFile = linkInfo != null ? !linkInfo.isDirectory : file.type == FileInfo.Type.FILE;
 
             if (isFile) {
-                Intent intent = new Intent(activity, XServerDisplayActivity.class);
-                intent.putExtra("container_id", container.id);
-                intent.putExtra("exec_path", file.path);
-                activity.startActivity(intent);
+                WinlatorProSuite.launchWithMemoryCheck(activity, container, file.path);
             }
             else {
                 folderStack.push(file);

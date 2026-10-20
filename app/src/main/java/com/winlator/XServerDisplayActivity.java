@@ -66,6 +66,7 @@ import com.winlator.inputcontrols.ControlsProfile;
 import com.winlator.inputcontrols.ExternalController;
 import com.winlator.inputcontrols.InputControlsManager;
 import com.winlator.math.Mathf;
+import com.winlator.pro.WinlatorProSuite;
 import com.winlator.renderer.GLRenderer;
 import com.winlator.services.ForegroundService;
 import com.winlator.widget.FrameRating;
@@ -235,7 +236,8 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
         inputControlsManager = new InputControlsManager(this);
         xServer = new XServer(this, screenInfo);
         xServer.setWinHandler(winHandler);
-        final boolean[] flags = {false, shortcut != null || getIntent().hasExtra("exec_path")};
+        // Всегда оставляем экран Рабочего стола Windows видимым даже при установке/открытии файла из Проводника!
+        final boolean[] flags = {false, false};
         xServer.windowManager.addOnWindowModificationListener(new WindowManager.OnWindowModificationListener() {
             @Override
             public void onUpdateWindowContent(Window window) {
@@ -473,6 +475,7 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
 
         WineStartMenuCreator.create(this, container);
         WineUtils.createDosdevicesSymlinks(container, true);
+        WinlatorProSuite.syncInstalledExeToDesktopWithIcons(this, container);
 
         String startupSelection = String.valueOf(container.getStartupSelection());
         if (!startupSelection.equals(container.getExtra("startupSelection")) || wineprefixWasUpdated) {
@@ -510,7 +513,8 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
         if (container != null) {
             if (container.getHUDMode() == FrameRating.Mode.FULL.ordinal()) envVars.put("X11_WND_GPU_INFO", "1");
 
-            String desktopName = shortcut != null || getIntent().hasExtra("exec_path") ? "nogui" : "shell";
+            // Всегда запускаем полноценную оболочку Рабочего стола Windows ("shell"), чтобы при установке из Проводника экран Рабочего стола не скрывался!
+            String desktopName = "shell";
             String guestExecutable = "wine explorer /desktop="+desktopName+","+xServer.screenInfo+" "+getWineStartCommand();
             guestProgramLauncherComponent.setGuestExecutable(guestExecutable);
 
@@ -629,6 +633,15 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
 
         if (MainActivity.DEBUG_MODE) rootView.addView(AppUtils.createDebugMsgTextView(this));
         AppUtils.observeSoftKeyboardVisibility(drawerLayout, renderer::setScreenOffsetYRelativeToCursor);
+
+        WinlatorProSuite.attachLiveDesktopHudAndOverlayCustomizer(
+            this,
+            rootView,
+            inputControlsView,
+            touchpadView,
+            container,
+            getIntent().getStringExtra("exec_path")
+        );
     }
 
     private void showInputControlsDialog() {

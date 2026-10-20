@@ -26,6 +26,7 @@ import com.winlator.contentdialog.CreateFolderDialog;
 import com.winlator.contentdialog.ShortcutSettingsDialog;
 import com.winlator.core.AppUtils;
 import com.winlator.core.ArrayUtils;
+import com.winlator.pro.WinlatorProSuite;
 
 import java.io.File;
 import java.util.ArrayList;
@@ -42,6 +43,9 @@ public class ShortcutsFragment extends BaseFileManagerFragment<Shortcut> {
     public void refreshContent() {
         super.refreshContent();
 
+        if (getContext() != null && manager != null) {
+            WinlatorProSuite.syncInstalledExeToDesktopWithIcons(getContext(), manager.ensureDefaultHybridContainer());
+        }
         Shortcut selectedFolder = !folderStack.isEmpty() ? folderStack.peek() : null;
         ArrayList<Shortcut> shortcuts = manager.loadShortcuts(selectedFolder);
         recyclerView.setAdapter(new ShortcutsAdapter(shortcuts));

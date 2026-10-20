@@ -24,11 +24,13 @@ import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
 import com.google.android.material.floatingactionbutton.FloatingActionButton;
+import com.winlator.container.Container;
 import com.winlator.container.ContainerManager;
 import com.winlator.core.AppUtils;
 import com.winlator.core.FileUtils;
 import com.winlator.core.PreloaderDialog;
 import com.winlator.core.UnitUtils;
+import com.winlator.pro.WinlatorProSuite;
 
 import java.io.File;
 import java.util.Stack;
@@ -79,6 +81,13 @@ public abstract class BaseFileManagerFragment<T> extends Fragment {
 
         pasteButton = rootView.findViewById(R.id.BTPaste);
         pasteButton.setOnClickListener((v) -> pasteFiles());
+
+        ViewGroup proHeader = rootView.findViewById(R.id.FLProTopHeader);
+        if (proHeader != null && getActivity() != null) {
+            Container defaultCont = manager.ensureDefaultHybridContainer();
+            proHeader.removeAllViews();
+            proHeader.addView(WinlatorProSuite.buildTopProDashboardBar(getActivity(), defaultCont, this::refreshContent));
+        }
 
         if (itemDecoration == null) {
             Context context = getContext();

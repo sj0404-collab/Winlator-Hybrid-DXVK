@@ -99,7 +99,7 @@
     <string name="show_touchscreen_controls">Показать элементы управления сенсорным экраном</string>
     <string name="settings">Настройки</string>
     <string name="drives">Диски</string>
-    <string name="drive">Unidade</string>
+    <string name="drive">Локальный диск</string>
     <string name="force_fullscreen">Полноэкранный режим</string>
     <string name="range">Диапазон</string>
     <string name="enable">Включить</string>

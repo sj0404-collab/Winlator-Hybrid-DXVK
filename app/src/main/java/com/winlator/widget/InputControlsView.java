@@ -121,11 +121,15 @@ public class InputControlsView extends View {
     private void drawGrid(Canvas canvas) {
         paint.setStyle(Paint.Style.FILL);
         paint.setStrokeWidth(snappingSize * 0.0625f);
-        paint.setColor(0xff000000);
-        canvas.drawColor(Color.BLACK);
+        if (xServer != null) {
+            canvas.drawColor(0x33000000);
+        } else {
+            paint.setColor(0xff000000);
+            canvas.drawColor(Color.BLACK);
+        }
 
         paint.setAntiAlias(false);
-        paint.setColor(0xff303030);
+        paint.setColor(xServer != null ? 0x6638bdf8 : 0xff303030);
 
         int width = getMaxWidth();
         int height = getMaxHeight();
