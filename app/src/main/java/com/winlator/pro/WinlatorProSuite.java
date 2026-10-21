@@ -1636,7 +1636,7 @@ public class WinlatorProSuite {
                 container.setDXWrapper(com.winlator.container.DXWrappers.WINED3D);
                 String oglDriver = (apiIdx == 4) ? com.winlator.container.GraphicsDrivers.ZINK : com.winlator.container.GraphicsDrivers.VIRGL;
                 container.setGraphicsDriver(vkDriver + "," + oglDriver);
-                cfgs[0].put("version", com.winlator.container.WineInfo.MAIN_WINE_VERSION);
+                cfgs[0].put("version", com.winlator.core.WineInfo.MAIN_WINE_VERSION);
                 container.setDXWrapperConfig(cfgs[0].toString() + "|" + cfgs[1].toString());
                 container.putExtra("dxwrapper", "");
 
@@ -1676,7 +1676,7 @@ public class WinlatorProSuite {
                 );
             }
 
-            File desktopDir = container.getDesktopDir();
+            File desktopDir = new File(container.getUserDir(), "Desktop");
             if (desktopDir != null && desktopDir.isDirectory()) {
                 File[] files = desktopDir.listFiles();
                 if (files != null) {
