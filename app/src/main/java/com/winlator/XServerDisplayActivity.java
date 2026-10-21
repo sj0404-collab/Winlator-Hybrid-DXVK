@@ -121,6 +121,8 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
     public volatile int unityLevel = -1;
     /** v12.6.4: этот запуск идёт на асинхронном DXVK, выбранном автоматически. */
     public volatile boolean asyncDxvkLaunch = false;
+    /** v12.7: 0 — Vortek/другой драйвер, 1 — PanVK + SHM, 2 — PanVK + DRI3 (Mali напрямую). */
+    public volatile int panvkLaunch = 0;
     private Runnable editInputControlsCallback;
     private Shortcut shortcut;
     private PreloaderDialog preloaderDialog;
@@ -877,12 +879,23 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
     private void extractGraphicsDriverFiles() {
         envVars.put("vblank_mode", "0");
 
+        // v12.7: интернет в играх/программах — сертификаты Android для HTTPS внутри Wine
+        try {
+            File caBundle = com.winlator.xenvironment.components.NetworkInfoUpdateComponent.ensureCaBundle(rootFS.getRootDir());
+            if (caBundle != null) {
+                envVars.put("WINE_ADDITIONAL_CERTS_DIR", caBundle.getAbsolutePath());
+                envVars.put("SSL_CERT_FILE", caBundle.getAbsolutePath());
+            }
+        } catch (Throwable ignored) {}
+        final boolean maliDevice = com.winlator.pro.WinlatorProSuite.isMaliDevice();
+
         String cacheId = "v12.4-";
         if (graphicsDriver[0].equals(GraphicsDrivers.TURNIP)) {
             cacheId += graphicsDriver[0]+"-"+graphicsDriverConfig[0].get("version", DefaultVersion.TURNIP);
         }
         else cacheId += graphicsDriver[0]+"-"+DefaultVersion.valueOf(graphicsDriver[0]);
         cacheId += "-"+graphicsDriver[1]+"-"+DefaultVersion.valueOf(graphicsDriver[1]);
+        if (maliDevice) cacheId += "-panvk-"+DefaultVersion.PANVK;
 
         String currentGraphicsDriver = preferences.getString("current_graphics_driver", "");
         File rootDir = rootFS.getRootDir();
@@ -894,7 +907,8 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
                 || !new File(libDir, "libvulkan_freedreno.so").isFile()
                 || !new File(libDir, "libGL.so.1.7.0").isFile()
                 || !turnipIcdFile.isFile()
-                || !vortekIcdFile.isFile();
+                || !vortekIcdFile.isFile()
+                || (maliDevice && !new File(libDir, "libvulkan_panfrost.so").isFile());
         boolean changed = !cacheId.equals(currentGraphicsDriver) || missingLibs;
 
         if (changed) {
@@ -908,6 +922,7 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
             String version = graphicsDriverConfig[0].get("version", DefaultVersion.TURNIP);
             GeneralComponents.extractFile(GeneralComponents.Type.TURNIP, this, version, DefaultVersion.TURNIP);
             TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, this, "graphics_driver/vortek-" + DefaultVersion.VORTEK + ".tzst", rootDir);
+            if (maliDevice) TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, this, "graphics_driver/panvk-" + DefaultVersion.PANVK + ".tzst", rootDir);
 
             preferences.edit().putString("current_graphics_driver", cacheId).apply();
         }
@@ -918,7 +933,19 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
             envVars.put("VK_ICD_FILENAMES", icdBase + "/freedreno_icd.aarch64.json:" + icdBase + "/vortek_icd.aarch64.json");
         }
         else {
-            envVars.put("VK_ICD_FILENAMES", icdBase + "/vortek_icd.aarch64.json:" + icdBase + "/freedreno_icd.aarch64.json");
+            // v12.7: Mali напрямую — PanVK (Mesa, прямо к ядру mali_kbase) вместо моста Vortek; Vortek остаётся запасным ICD
+            panvkLaunch = 0;
+            int maliMode = maliDevice && graphicsDriver[0].equals(GraphicsDrivers.VORTEK)
+                ? com.winlator.pro.WinlatorProSuite.maliDriverMode(this, resolveEarlyTargetExe()) : 0;
+            if (maliMode > 0 && new File(libDir, "libvulkan_panfrost.so").isFile() && new File(vulkanICDDir, "panfrost_icd.aarch64.json").isFile()) {
+                panvkLaunch = maliMode;
+                envVars.put("VK_ICD_FILENAMES", icdBase + "/panfrost_icd.aarch64.json:" + icdBase + "/vortek_icd.aarch64.json");
+                if (maliMode == 2) envVars.put("PANVK_KBASE_DRI3", "raw");
+                envVars.put("DXVK_LOG_LEVEL", "info");
+                envVars.put("DXVK_LOG_PATH", RootFS.getDosUserCachePath());
+                com.winlator.pro.WinlatorProSuite.clearDxvkLogs(rootFS.getRootDir(), resolveEarlyTargetExe());
+            }
+            else envVars.put("VK_ICD_FILENAMES", icdBase + "/vortek_icd.aarch64.json:" + icdBase + "/freedreno_icd.aarch64.json");
         }
 
         switch (graphicsDriver[1]) {

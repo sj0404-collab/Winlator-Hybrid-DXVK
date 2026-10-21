@@ -2,8 +2,12 @@ name: Build Native Winlator Hybrid DXVK APK
 
 on:
   push:
-    branches: [ "main", "master" ]
+    branches: [ "main", "master", "v12.*" ]
+    tags: [ "v*" ]
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -29,11 +33,24 @@ jobs:
       - name: Prepare Signed APK Artifact
         run: |
           mkdir -p dist
-          cp app/build/outputs/apk/release/app-release.apk dist/Winlator-Hybrid-DXVK-v12.6.4-arm64-release.apk
+          VER=$(grep -m1 -oE 'versionName "[^"]+"' app/build.gradle | sed -E 's/versionName "([0-9.]+).*/\1/')
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then BASE="Winlator-Hybrid-DXVK-${GITHUB_REF_NAME}-arm64-release"; else BASE="Winlator-Hybrid-DXVK-v${VER}-arm64-release"; fi
+          cp app/build/outputs/apk/release/app-release.apk "dist/${BASE}.apk"
+          echo "APK_BASE=${BASE}" >> "$GITHUB_ENV"
           ls -lh dist/
 
       - name: Upload Release APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Winlator-Hybrid-DXVK-v12.6.4-arm64-release
-          path: dist/Winlator-Hybrid-DXVK-v12.6.4-arm64-release.apk
+          name: ${{ env.APK_BASE }}
+          path: dist/${{ env.APK_BASE }}.apk
+
+      - name: Publish GitHub Release (tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Winlator Hybrid DXVK ${{ github.ref_name }}
+          body_path: RELEASE_NOTES.md
+          files: dist/${{ env.APK_BASE }}.apk
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          make_latest: ${{ !contains(github.ref_name, '-') }}

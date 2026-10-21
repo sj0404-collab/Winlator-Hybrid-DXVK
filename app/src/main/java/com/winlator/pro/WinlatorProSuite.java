@@ -2137,6 +2137,8 @@ public class WinlatorProSuite {
         tvFps.setVisibility(View.GONE);
         statusLine.addView(tvFps, new LinearLayout.LayoutParams(dp(activity, 104), LinearLayout.LayoutParams.WRAP_CONTENT));
         final boolean[] firstFrameSeen = {false};
+        final long[] firstFrameAt = {0L};
+        final boolean[] driverChecked = {false};
         final long hudStartMs = android.os.SystemClock.elapsedRealtime();
         final Handler fpsHandler = new Handler(Looper.getMainLooper());
         fpsHandler.post(new Runnable() {
@@ -2148,7 +2150,17 @@ public class WinlatorProSuite {
                 fpsGovernorTick(activity, fps);
                 long sinceStart = android.os.SystemClock.elapsedRealtime() - hudStartMs;
                 if (fps >= 0.5f) {
+                    if (!firstFrameSeen[0]) firstFrameAt[0] = android.os.SystemClock.elapsedRealtime();
                     firstFrameSeen[0] = true;
+                    if (!driverChecked[0] && activity.panvkLaunch > 0 && android.os.SystemClock.elapsedRealtime() - firstFrameAt[0] > 4000L) {
+                        driverChecked[0] = true;
+                        BG.execute(() -> {
+                            final String msg = checkPanvkActive(activity);
+                            if (msg != null) activity.runOnUiThread(() -> {
+                                if (!activity.isFinishing()) AppUtils.showToast(activity, msg);
+                            });
+                        });
+                    }
                     String t = String.format(Locale.US, "%.0f FPS · %.0f мс", fps, 1000f / fps);
                     if (!t.contentEquals(tvFps.getText())) tvFps.setText(t);
                     if (tvFps.getVisibility() != View.VISIBLE) tvFps.setVisibility(View.VISIBLE);
@@ -2502,6 +2514,8 @@ public class WinlatorProSuite {
             sb.append("Unity: ").append(activity != null && activity.unityLaunch ? "да (режим совместимости Box64 включён)" : "нет/не определено").append('\n');
             if (container != null) {
                 sb.append("DX-обёртка: ").append(container.getDXWrapper()).append(" • Box64 пресет контейнера: ").append(container.getBox64Preset()).append('\n');
+                sb.append("Видео: ").append(activity != null && activity.panvkLaunch > 0 ? ("PanVK (Mali напрямую" + (activity.panvkLaunch == 2 ? ", DRI3)" : ", SHM)")) : "по настройке контейнера (Vortek/Turnip)")
+                    .append(" • DXVK: ").append(activity != null && activity.asyncDxvkLaunch ? "асинхронный 2.4.1-gplasync" : "по настройке контейнера").append('\n');
             }
             sb.append("Устройство: ").append(Build.MANUFACTURER).append(' ').append(Build.MODEL).append(" • Android ").append(Build.VERSION.RELEASE).append('\n');
         } catch (Throwable ignored) {}
@@ -2885,6 +2899,14 @@ public class WinlatorProSuite {
     /** После вылета: сначала откатываем асинхронный DXVK (если он был), иначе — режим Unity на ступень надёжнее. */
     private static String stepDownAfterCrash(XServerDisplayActivity activity) {
         try {
+            if (activity != null && activity.panvkLaunch > 0) {
+                File pexe = activity.getLaunchTargetExe();
+                if (maliDriverMode(activity, pexe) > 0) {
+                    setMaliDriverMode(activity, pexe, 0);
+                    return "Следующий запуск — автоматически через Vortek (PanVK выключен для этой игры; "
+                        + "вернуть: Ещё → FPS/Производительность → Видеодрайвер).\n\n";
+                }
+            }
             if (activity != null && activity.asyncDxvkLaunch) {
                 File exe = activity.getLaunchTargetExe();
                 if (exe != null && useAsyncDxvk(activity, exe)) {
@@ -2895,6 +2917,103 @@ public class WinlatorProSuite {
             }
         } catch (Throwable ignored) {}
         return downgradeUnityLevelAfterCrash(activity);
+    }
+
+    // ===================== v12.7: Mali напрямую (PanVK) =====================
+    private static volatile int maliState = -1;
+
+    /** Есть ядро Mali (/dev/mali0) — значит можно PanVK вместо моста Vortek. */
+    public static boolean isMaliDevice() {
+        if (maliState < 0) {
+            boolean m = false;
+            try {
+                m = new File("/dev/mali0").exists();
+            } catch (Throwable ignored) {}
+            maliState = m ? 1 : 0;
+        }
+        return maliState == 1;
+    }
+
+    public static String maliGpuInfo() {
+        for (String p : new String[]{"/sys/class/misc/mali0/device/gpuinfo", "/sys/devices/platform/mali/gpuinfo"}) {
+            try {
+                String v = com.winlator.core.FileUtils.readString(new File(p));
+                if (v != null && !v.trim().isEmpty()) return v.trim();
+            } catch (Throwable ignored) {}
+        }
+        return "Mali";
+    }
+
+    private static String maliKey(File exe) {
+        return exe != null ? gameWindowKey(exe.getName()) : "desktop";
+    }
+
+    /** 2 — PanVK + DRI3 (по умолчанию), 1 — PanVK + SHM, 0 — Vortek. */
+    public static int maliDriverMode(Context ctx, File exe) {
+        if (ctx == null || !isMaliDevice()) return 0;
+        try {
+            return PreferenceManager.getDefaultSharedPreferences(ctx).getInt("mali_driver_" + maliKey(exe), 2);
+        } catch (Throwable t) {
+            return 0;
+        }
+    }
+
+    public static void setMaliDriverMode(Context ctx, File exe, int mode) {
+        if (ctx == null) return;
+        try {
+            PreferenceManager.getDefaultSharedPreferences(ctx).edit().putInt("mali_driver_" + maliKey(exe), mode).apply();
+        } catch (Throwable ignored) {}
+    }
+
+    /** Старые логи DXVK удаляем, чтобы проверка драйвера читала только текущий запуск. */
+    public static void clearDxvkLogs(File rootDir, File exe) {
+        try {
+            if (rootDir == null || exe == null) return;
+            File dir = new File(rootDir, com.winlator.xenvironment.RootFS.USER_CACHE_PATH);
+            String base = exe.getName().replaceAll("(?i)\\.exe$", "");
+            for (String suf : new String[]{"_dxgi.log", "_d3d11.log", "_d3d9.log", "_d3d10.log", "_d3d8.log"}) {
+                File f = new File(dir, base + suf);
+                if (f.isFile()) f.delete();
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    /** По логу DXVK видно, какой драйвер реально работает. null — показывать нечего (игра не на DXVK). */
+    static String checkPanvkActive(XServerDisplayActivity a) {
+        try {
+            File exe = a.getLaunchTargetExe();
+            File dir = new File(com.winlator.xenvironment.RootFS.find(a).getRootDir(), com.winlator.xenvironment.RootFS.USER_CACHE_PATH);
+            String base = exe != null ? exe.getName().replaceAll("(?i)\\.exe$", "").toLowerCase(Locale.ROOT) + "_" : null;
+            File[] logs = dir.listFiles((d, name) -> name.endsWith("_dxgi.log") || name.endsWith("_d3d11.log") || name.endsWith("_d3d9.log") || name.endsWith("_d3d10.log"));
+            StringBuilder log = new StringBuilder();
+            if (logs != null) {
+                long now = System.currentTimeMillis();
+                for (File f : logs) {
+                    boolean mine = base != null && f.getName().toLowerCase(Locale.ROOT).startsWith(base);
+                    if (mine || now - f.lastModified() < 10 * 60 * 1000L) {
+                        String v = com.winlator.core.FileUtils.readString(f);
+                        if (v != null) log.append(v).append('\n');
+                    }
+                }
+            }
+            if (log.length() == 0) return null;
+            String low = log.toString().toLowerCase(Locale.ROOT);
+            boolean active = low.contains("panvk") || low.contains("panfrost");
+            PreferenceManager.getDefaultSharedPreferences(a).edit().putInt("panvk_status_" + maliKey(exe), active ? 1 : 0).apply();
+            if (active) return "🟢 Видеодрайвер: Mali напрямую (PanVK" + (a.panvkLaunch == 2 ? ", DRI3)" : ", SHM)");
+            return "🟡 PanVK не запустился — игра идёт через Vortek. Можно попробовать «PanVK · SHM» в «Производительность».";
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    private static String panvkStatusText(Context ctx, File exe) {
+        try {
+            int st = PreferenceManager.getDefaultSharedPreferences(ctx).getInt("panvk_status_" + maliKey(exe), -1);
+            if (st == 1) return "Последняя проверка: PanVK работал ✓";
+            if (st == 0) return "Последняя проверка: PanVK не запустился, работал Vortek.";
+        } catch (Throwable ignored) {}
+        return "";
     }
 
     private static String gamePrefSuffix(XServerDisplayActivity a) {
@@ -3177,6 +3296,17 @@ public class WinlatorProSuite {
                 getUnityLevel(activity, exe), v -> setUnityLevel(activity, exe, v)));
         }
 
+        if (isMaliDevice()) {
+            final File mexe = activity.getLaunchTargetExe();
+            String now = activity.panvkLaunch > 0 ? ("PanVK" + (activity.panvkLaunch == 2 ? " · DRI3" : " · SHM")) : "Vortek";
+            root.addView(perfTitle(ctx, "Видеодрайвер Mali (со следующего запуска)"));
+            root.addView(perfHint(ctx, "«PanVK» — открытый драйвер Mesa прямо к ядру Mali, без моста Vortek (экспериментальный). "
+                + "DRI3 — кадр без лишней копии, SHM — надёжнее. Если игра вылетит на PanVK, следующий запуск сам пойдёт через Vortek. "
+                + "Сейчас: " + now + ". " + panvkStatusText(activity, mexe)));
+            root.addView(perfChips(ctx, new String[]{"PanVK · DRI3", "PanVK · SHM", "Vortek"}, new int[]{2, 1, 0}, maliDriverMode(activity, mexe),
+                v -> setMaliDriverMode(activity, mexe, v)));
+        }
+
         if (activity.getLaunchTargetExe() != null) {
             final File dexe = activity.getLaunchTargetExe();
             root.addView(perfTitle(ctx, "DXVK (со следующего запуска)"));
@@ -3188,6 +3318,7 @@ public class WinlatorProSuite {
 
         StringBuilder info = new StringBuilder();
         float[] rates = supportedRefreshRates(activity);
+        if (isMaliDevice()) info.append("GPU: ").append(maliGpuInfo()).append('\n');
         info.append("Экран: ").append(Math.round(currentRefresh(activity))).append(" Гц (доступно:");
         for (float r : rates) info.append(' ').append(Math.round(r));
         info.append(")\n");

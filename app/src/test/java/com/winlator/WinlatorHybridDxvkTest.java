@@ -39,6 +39,13 @@ public class WinlatorHybridDxvkTest {
     }
 
     @Test
+    public void testPanvkMaliDriverBundled() {
+        assertEquals("0.1.0-rc3lm", DefaultVersion.PANVK);
+        String rel = "src/main/assets/graphics_driver/panvk-" + DefaultVersion.PANVK + ".tzst";
+        assertTrue(new java.io.File(rel).isFile() || new java.io.File("app/" + rel).isFile());
+    }
+
+    @Test
     public void testCombinableShadersAndMemoryStatus() {
         CASSharpenEffect cas = new CASSharpenEffect();
         cas.setSharpness(0.85f);
