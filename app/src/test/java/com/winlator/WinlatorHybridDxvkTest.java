@@ -198,6 +198,13 @@ public class WinlatorHybridDxvkTest {
 
         String s5 = com.winlator.core.FileUtils.readString(c5);
         assertNotNull(s5);
+        // v12.6: preset 5 is a pure XInput gamepad (mixing keyboard/mouse made Unity games flip
+        // "Keyboard/Controller activated" on every touch). Mouse layout lives in preset 6 + floating touchpad.
+        assertTrue("preset 5 must be a pure gamepad", s5.contains("\"GAMEPAD_BUTTON_A\"") && s5.contains("\"GAMEPAD_DPAD_UP\""));
+        assertFalse("preset 5 must not contain keyboard bindings", s5.contains("\"KEY_"));
+        assertFalse("preset 5 must not contain mouse bindings", s5.contains("\"MOUSE_"));
+        s5 = com.winlator.core.FileUtils.readString(c6);
+        assertNotNull(s5);
         assertTrue(s5.contains("\"TRACKPAD\""));
         assertTrue(s5.contains("\"ТАЧПАД\""));
         assertTrue(s5.contains("\"MOUSE_LEFT_BUTTON\""));
