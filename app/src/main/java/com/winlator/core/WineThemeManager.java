@@ -21,7 +21,7 @@ import java.io.File;
 public abstract class WineThemeManager {
     public enum Theme {LIGHT, DARK}
     public enum BackgroundType {IMAGE, COLOR}
-    public static final String DEFAULT_DESKTOP_THEME = Theme.LIGHT+","+BackgroundType.IMAGE+",#0277bd";
+    public static final String DEFAULT_DESKTOP_THEME = Theme.DARK+","+BackgroundType.IMAGE+",#0f172a,wallpaper-1";
     public static final String DEFAULT_WALLPAPER_ID = "wallpaper-1";
 
     public static class ThemeInfo {
@@ -129,11 +129,11 @@ public abstract class WineThemeManager {
     }
 
     private static void createWallpaperBMPFile(Context context, String wallpaperId, ScreenInfo screenInfo) {
-        final int outputHeight = 480;
+        final int outputHeight = Math.max(720, screenInfo.height);
         int outputWidth = (int)Math.ceil(((float)outputHeight / screenInfo.height) * screenInfo.width);
 
         Bitmap outputBitmap = Bitmap.createBitmap(outputWidth, outputHeight, Bitmap.Config.ARGB_8888);
-        Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
         Canvas canvas = new Canvas(outputBitmap);
 
         File userWallpaperFile = getUserWallpaperFile(context);
@@ -153,32 +153,54 @@ public abstract class WineThemeManager {
                 return;
             }
 
-            int primaryColor = Color.parseColor(config.optString("primaryColor", "#ffffff"));
-            int secondaryColor = Color.parseColor(config.optString("secondaryColor", "#ffffff"));
+            int primaryColor = Color.parseColor(config.optString("primaryColor", "#0f172a"));
+            int secondaryColor = Color.parseColor(config.optString("secondaryColor", "#1e1b4b"));
             String orientation = config.optString("orientation", "none");
             float scale = (float)config.optDouble("scale", 1.0);
+            boolean fullBleed = config.optBoolean("fullBleed", false);
             Bitmap wallpaperBitmap = ImageUtils.getBitmapFromAsset(context, wallpaperDir+"/image.png");
             paint.setStyle(Paint.Style.FILL);
 
-            if (orientation.equals("horizontal")) {
-                paint.setColor(primaryColor);
-                canvas.drawRect(0, 0, outputWidth * 0.5f, outputHeight, paint);
-                paint.setColor(secondaryColor);
-                canvas.drawRect(outputWidth * 0.5f, 0, outputWidth, outputHeight, paint);
+            if (fullBleed || (wallpaperBitmap != null && wallpaperBitmap.getWidth() > wallpaperBitmap.getHeight())) {
+                canvas.drawColor(primaryColor);
+                if (wallpaperBitmap != null) {
+                    float srcAspect = (float)wallpaperBitmap.getWidth() / wallpaperBitmap.getHeight();
+                    float dstAspect = (float)outputWidth / outputHeight;
+                    Rect srcRect;
+                    if (srcAspect > dstAspect) {
+                        int cropW = Math.round(wallpaperBitmap.getHeight() * dstAspect);
+                        int cropX = (wallpaperBitmap.getWidth() - cropW) / 2;
+                        srcRect = new Rect(cropX, 0, cropX + cropW, wallpaperBitmap.getHeight());
+                    } else {
+                        int cropH = Math.round(wallpaperBitmap.getWidth() / dstAspect);
+                        int cropY = (wallpaperBitmap.getHeight() - cropH) / 2;
+                        srcRect = new Rect(0, cropY, wallpaperBitmap.getWidth(), cropY + cropH);
+                    }
+                    RectF dstRect = new RectF(0, 0, outputWidth, outputHeight);
+                    canvas.drawBitmap(wallpaperBitmap, srcRect, dstRect, paint);
+                }
             }
-            else if (orientation.equals("vertical")) {
-                paint.setColor(primaryColor);
-                canvas.drawRect(0, 0, outputWidth, outputHeight * 0.5f, paint);
-                paint.setColor(secondaryColor);
-                canvas.drawRect(0, outputHeight * 0.5f, outputWidth, outputHeight, paint);
-            }
+            else {
+                if (orientation.equals("horizontal")) {
+                    paint.setColor(primaryColor);
+                    canvas.drawRect(0, 0, outputWidth * 0.5f, outputHeight, paint);
+                    paint.setColor(secondaryColor);
+                    canvas.drawRect(outputWidth * 0.5f, 0, outputWidth, outputHeight, paint);
+                }
+                else if (orientation.equals("vertical")) {
+                    paint.setColor(primaryColor);
+                    canvas.drawRect(0, 0, outputWidth, outputHeight * 0.5f, paint);
+                    paint.setColor(secondaryColor);
+                    canvas.drawRect(0, outputHeight * 0.5f, outputWidth, outputHeight, paint);
+                }
 
-            float targetSize = outputHeight * scale;
-            float centerX = (outputWidth - targetSize) * 0.5f;
-            float centerY = (outputHeight - targetSize) * 0.5f;
-            Rect srcRect = new Rect(0, 0, wallpaperBitmap.getWidth(), wallpaperBitmap.getHeight());
-            RectF dstRect = new RectF(centerX, centerY, centerX + targetSize, centerY + targetSize);
-            canvas.drawBitmap(wallpaperBitmap, srcRect, dstRect, paint);
+                float targetSize = outputHeight * scale;
+                float centerX = (outputWidth - targetSize) * 0.5f;
+                float centerY = (outputHeight - targetSize) * 0.5f;
+                Rect srcRect = new Rect(0, 0, wallpaperBitmap.getWidth(), wallpaperBitmap.getHeight());
+                RectF dstRect = new RectF(centerX, centerY, centerX + targetSize, centerY + targetSize);
+                canvas.drawBitmap(wallpaperBitmap, srcRect, dstRect, paint);
+            }
         }
 
         RootFS rootFS = RootFS.find(context);

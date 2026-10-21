@@ -37,7 +37,7 @@ import java.util.Timer;
 import java.util.TimerTask;
 
 public class InputControlsView extends View {
-    public static final float DEFAULT_OVERLAY_OPACITY = 0.4f;
+    public static final float DEFAULT_OVERLAY_OPACITY = 0.55f;
     private boolean editMode = false;
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private ColorFilter lightColorFilter;
@@ -387,9 +387,6 @@ public class InputControlsView extends View {
                     touchpadView.setPointerButtonLeftEnabled(true);
                     for (ControlElement element : profile.getElements()) {
                         if (element.handleTouchDown(pointerId, x, y)) handled = true;
-                        if (element.getBindingAt(0) == Binding.MOUSE_LEFT_BUTTON && element.getLastBindingIndex() == 0) {
-                            touchpadView.setPointerButtonLeftEnabled(false);
-                        }
                     }
                     if (!handled) touchpadView.onTouchEvent(event);
                     break;

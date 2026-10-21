@@ -55,7 +55,7 @@ public class GLRenderer implements GLSurfaceView.Renderer, WindowManager.OnWindo
     private boolean toggleFullscreen = false;
     protected boolean viewportNeedsUpdate = true;
     private boolean cursorVisible = true;
-    private float cursorScale = 1.0f;
+    private float cursorScale = 1.35f;
     private int cursorBackColor = 0xffffff;
     private int cursorForeColor = 0x000000;
     private boolean screenOffsetYRelativeToCursor = false;
@@ -262,10 +262,12 @@ public class GLRenderer implements GLSurfaceView.Renderer, WindowManager.OnWindo
             short x = xServer.pointer.getClampedX();
             short y = xServer.pointer.getClampedY();
 
-            if (cursor != null) {
-                if (cursor.isVisible()) renderCursorDrawable(cursor.cursorImage, x - cursor.hotSpotX, y - cursor.hotSpotY);
+            if (cursor != null && cursor.isVisible() && cursor.cursorImage != null && cursor.cursorImage.width > 1 && cursor.cursorImage.height > 1) {
+                renderCursorDrawable(cursor.cursorImage, x - cursor.hotSpotX, y - cursor.hotSpotY);
             }
-            else renderCursorDrawable(rootCursorDrawable, x, y);
+            else {
+                renderCursorDrawable(rootCursorDrawable, x, y);
+            }
         }
 
         quadVertices.disable();

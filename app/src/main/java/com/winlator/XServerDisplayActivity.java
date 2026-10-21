@@ -507,9 +507,15 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
         }
 
         String desktopTheme = container.getDesktopTheme();
-        if (!(desktopTheme+","+xServer.screenInfo).equals(container.getExtra("desktopTheme"))) {
+        if (desktopTheme == null || desktopTheme.isEmpty() || desktopTheme.startsWith("LIGHT,IMAGE,#0277bd")) {
+            desktopTheme = WineThemeManager.DEFAULT_DESKTOP_THEME;
+            container.setDesktopTheme(desktopTheme);
+            containerDataChanged = true;
+        }
+        String themeCacheKey = "v12.4-" + desktopTheme + "," + xServer.screenInfo;
+        if (!themeCacheKey.equals(container.getExtra("desktopTheme"))) {
             WineThemeManager.apply(this, new WineThemeManager.ThemeInfo(desktopTheme), xServer.screenInfo);
-            container.putExtra("desktopTheme", desktopTheme+","+xServer.screenInfo);
+            container.putExtra("desktopTheme", themeCacheKey);
             containerDataChanged = true;
         }
 
@@ -573,8 +579,19 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
             String guestExecutable = "wine explorer /desktop="+desktopName+","+xServer.screenInfo+" "+getWineStartCommand();
             guestProgramLauncherComponent.setGuestExecutable(guestExecutable);
 
+            String driverTuDebug = envVars.get("TU_DEBUG");
             envVars.putAll(container.getEnvVars());
             if (shortcut != null) envVars.putAll(shortcut.getExtra("envVars"));
+            if (!driverTuDebug.isEmpty()) {
+                String currentTuDebug = envVars.get("TU_DEBUG");
+                for (String token : driverTuDebug.split(",")) {
+                    String trimmed = token.trim();
+                    if (!trimmed.isEmpty() && !currentTuDebug.contains(trimmed)) {
+                        currentTuDebug = (!currentTuDebug.isEmpty() ? currentTuDebug + "," : "") + trimmed;
+                    }
+                }
+                envVars.put("TU_DEBUG", currentTuDebug);
+            }
             if (!envVars.has("WINEESYNC")) envVars.put("WINEESYNC", "1");
 
             guestProgramLauncherComponent.setBox64Preset(shortcut != null ? shortcut.getExtra("box64Preset", container.getBox64Preset()) : container.getBox64Preset());
@@ -659,19 +676,19 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
         FrameLayout rootView = findViewById(R.id.FLXServerDisplay);
         xServerView = new XServerView(this, xServer);
         final GLRenderer renderer = xServerView.getRenderer();
-        renderer.setCursorVisible(false);
+        renderer.setCursorVisible(true);
         renderer.setCursorColor(preferences.getInt("cursor_color", 0xffffff));
-        renderer.setCursorScale(preferences.getFloat("cursor_scale", 1.0f));
+        renderer.setCursorScale(preferences.getFloat("cursor_scale", 1.35f));
         renderer.setForceWindowsFullscreen(shortcut != null && shortcut.getExtra("forceFullscreen", "0").equals("1"));
 
         xServer.setRenderer(renderer);
         rootView.addView(xServerView);
 
-        globalCursorSpeed = preferences.getFloat("cursor_speed", 1.0f);
+        globalCursorSpeed = preferences.getFloat("cursor_speed", 1.15f);
         capturePointerOnExternalMouse = preferences.getBoolean("capture_pointer_on_external_mouse", true);
         touchpadView = new TouchpadView(this, xServer, capturePointerOnExternalMouse);
         touchpadView.setSensitivity(globalCursorSpeed);
-        touchpadView.setMoveCursorToTouchpoint(preferences.getBoolean("move_cursor_to_touchpoint", false));
+        touchpadView.setMoveCursorToTouchpoint(preferences.getBoolean("move_cursor_to_touchpoint", true));
         touchpadView.setFourFingersTapCallback(() -> {
             if (!drawerLayout.isDrawerOpen(GravityCompat.START)) drawerLayout.openDrawer(GravityCompat.START);
         });
@@ -695,12 +712,27 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
             rootView.addView(frameRating);
         }
 
+        ControlsProfile activeProfile = null;
         if (shortcut != null) {
             String controlsProfile = shortcut.getExtra("controlsProfile");
             if (!controlsProfile.isEmpty()) {
-                ControlsProfile profile = inputControlsManager.getProfile(Integer.parseInt(controlsProfile));
-                if (profile != null) showInputControls(profile);
+                try {
+                    activeProfile = inputControlsManager.getProfile(Integer.parseInt(controlsProfile));
+                } catch (NumberFormatException ignored) {}
             }
+        }
+        if (activeProfile == null && preferences.getBoolean("auto_show_touch_controls", true)) {
+            int savedProfileId = preferences.getInt("default_touch_controls_profile_id", 5);
+            activeProfile = inputControlsManager.getProfile(savedProfileId);
+            if (activeProfile == null) activeProfile = inputControlsManager.getProfile(5);
+            if (activeProfile == null) activeProfile = inputControlsManager.getProfile(3);
+            if (activeProfile == null) {
+                ArrayList<ControlsProfile> allProfiles = inputControlsManager.getProfiles(true);
+                if (!allProfiles.isEmpty()) activeProfile = allProfiles.get(0);
+            }
+        }
+        if (activeProfile != null) {
+            showInputControls(activeProfile);
         }
 
         if (MainActivity.DEBUG_MODE) rootView.addView(AppUtils.createDebugMsgTextView(this));
@@ -780,17 +812,12 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
         inputControlsView.setProfile(profile);
 
         touchpadView.setSensitivity(profile.getCursorSpeed() * globalCursorSpeed);
-        touchpadView.setPointerButtonRightEnabled(false);
+        touchpadView.setPointerButtonLeftEnabled(true);
+        touchpadView.setPointerButtonRightEnabled(true);
 
         GLRenderer renderer = xServerView.getRenderer();
-        if (profile.isDisableMouseInput()) {
-            renderer.setCursorVisible(false);
-            touchpadView.setEnabled(false);
-        }
-        else {
-            renderer.setCursorVisible(true);
-            touchpadView.setEnabled(true);
-        }
+        renderer.setCursorVisible(true);
+        touchpadView.setEnabled(true);
 
         inputControlsView.invalidate();
     }
@@ -815,7 +842,7 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
     private void extractGraphicsDriverFiles() {
         envVars.put("vblank_mode", "0");
 
-        String cacheId = "v12.3-";
+        String cacheId = "v12.4-";
         if (graphicsDriver[0].equals(GraphicsDrivers.TURNIP)) {
             cacheId += graphicsDriver[0]+"-"+graphicsDriverConfig[0].get("version", DefaultVersion.TURNIP);
         }
@@ -825,7 +852,14 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
         String currentGraphicsDriver = preferences.getString("current_graphics_driver", "");
         File rootDir = rootFS.getRootDir();
         File libDir = rootFS.getLibDir();
-        boolean missingLibs = !new File(libDir, "libvulkan_vortek.so").isFile() || !new File(libDir, "libvulkan_freedreno.so").isFile();
+        File vulkanICDDir = new File(rootDir, "/usr/share/vulkan/icd.d");
+        File turnipIcdFile = new File(vulkanICDDir, "freedreno_icd.aarch64.json");
+        File vortekIcdFile = new File(vulkanICDDir, "vortek_icd.aarch64.json");
+        boolean missingLibs = !new File(libDir, "libvulkan_vortek.so").isFile()
+                || !new File(libDir, "libvulkan_freedreno.so").isFile()
+                || !new File(libDir, "libGL.so.1.7.0").isFile()
+                || !turnipIcdFile.isFile()
+                || !vortekIcdFile.isFile();
         boolean changed = !cacheId.equals(currentGraphicsDriver) || missingLibs;
 
         if (changed) {
@@ -833,7 +867,6 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
             FileUtils.delete(new File(libDir, "libvulkan_vortek.so"));
             FileUtils.delete(new File(libDir, "libGL.so.1.7.0"));
 
-            File vulkanICDDir = new File(rootDir, "/usr/share/vulkan/icd.d");
             FileUtils.delete(vulkanICDDir);
             vulkanICDDir.mkdirs();
 
@@ -844,12 +877,13 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
             preferences.edit().putString("current_graphics_driver", cacheId).apply();
         }
 
+        String icdBase = vulkanICDDir.getAbsolutePath();
         if (graphicsDriver[0].equals(GraphicsDrivers.TURNIP) && com.winlator.core.GPUHelper.isTurnipSupported(this)) {
             TurnipConfigDialog.setEnvVars(this, graphicsDriverConfig[0], envVars);
-            envVars.put("VK_ICD_FILENAMES", "/usr/share/vulkan/icd.d/freedreno_icd.aarch64.json:/usr/share/vulkan/icd.d/vortek_icd.aarch64.json");
+            envVars.put("VK_ICD_FILENAMES", icdBase + "/freedreno_icd.aarch64.json:" + icdBase + "/vortek_icd.aarch64.json");
         }
         else {
-            envVars.put("VK_ICD_FILENAMES", "/usr/share/vulkan/icd.d/vortek_icd.aarch64.json:/usr/share/vulkan/icd.d/freedreno_icd.aarch64.json");
+            envVars.put("VK_ICD_FILENAMES", icdBase + "/vortek_icd.aarch64.json:" + icdBase + "/freedreno_icd.aarch64.json");
         }
 
         switch (graphicsDriver[1]) {
@@ -905,11 +939,13 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
 
     private boolean extractDXWrapperFiles() {
         WineD3DConfigDialog.setEnvVars(dxwrapperConfig[0], envVars);
-        String cacheId = "v12.3-";
+        String cacheId = "v12.4-";
         String requestedDxvkVer = dxwrapperConfig[0].get("version", DefaultVersion.DXVK(graphicsDriver[0]));
-        if (requestedDxvkVer.isEmpty() || requestedDxvkVer.equals("1.7.2+2.4.1") || requestedDxvkVer.equals("hybrid")) {
+        if (requestedDxvkVer.isEmpty() || requestedDxvkVer.equals("1.7.2+2.4.1") || requestedDxvkVer.equals("hybrid") || requestedDxvkVer.equals(WineInfo.MAIN_WINE_VERSION)) {
             requestedDxvkVer = DefaultVersion.HYBRID_DXVK;
-            dxwrapperConfig[0].put("version", requestedDxvkVer);
+            if (dxwrapper.equals(DXWrappers.DXVK)) {
+                dxwrapperConfig[0].put("version", requestedDxvkVer);
+            }
         }
 
         if (dxwrapper.equals(DXWrappers.DXVK)) {
@@ -919,17 +955,18 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
         }
         else if (dxwrapper.equals(DXWrappers.WINED3D)) {
             envVars.put("WINEDLLOVERRIDES", "mscoree,mshtml=d;d3d11,dxgi,d3d10core,d3d10,d3d10_1,d3d9,d3d8,wined3d=b,n;d3dcompiler_47,d3dcompiler_46,d3dcompiler_43=n,b");
-            cacheId += dxwrapper+"-"+dxwrapperConfig[0].get("version", DefaultVersion.WINED3D);
+            cacheId += dxwrapper+"-"+WineInfo.MAIN_WINE_VERSION;
         }
 
         File rootDir = rootFS.getRootDir();
         File windowsDir = new File(rootDir, RootFS.WINEPREFIX+"/drive_c/windows");
         File sys32D3d11 = new File(windowsDir, "system32/d3d11.dll");
         boolean missingDxvkDll = dxwrapper.equals(DXWrappers.DXVK) && (!sys32D3d11.isFile() || sys32D3d11.length() < 1000000L);
+        boolean staleDxvkWhenWineD3D = dxwrapper.equals(DXWrappers.WINED3D) && (!sys32D3d11.isFile() || sys32D3d11.length() > 1000000L);
 
         String ddrawWrapper = dxwrapperConfig[0].get("ddrawWrapper", DXWrappers.WINED3D);
         cacheId += "-"+DXWrappers.VKD3D+"-"+dxwrapperConfig[1].get("version", DefaultVersion.VKD3D)+"-"+ddrawWrapper;
-        boolean changed = !cacheId.equals(container.getExtra("dxwrapper")) || missingDxvkDll;
+        boolean changed = !cacheId.equals(container.getExtra("dxwrapper")) || missingDxvkDll || staleDxvkWhenWineD3D;
         VKD3DConfigDialog.setEnvVars(dxwrapperConfig[1], envVars);
 
         if (ddrawWrapper.equals(DXWrappers.CNC_DDRAW)) envVars.put("CNC_DDRAW_CONFIG_FILE", "C:\\ProgramData\\cnc-ddraw\\ddraw.ini");
@@ -938,12 +975,12 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
         container.putExtra("dxwrapper", cacheId);
 
         if (dxwrapper.equals(DXWrappers.WINED3D)) {
+            final String[] dlls = {"d3d8.dll", "d3d9.dll", "d3d10.dll", "d3d10_1.dll", "d3d10core.dll", "d3d11.dll", "d3d12.dll", "d3d12core.dll", "dxgi.dll", "ddraw.dll", "wined3d.dll"};
+            restoreBuiltinDllFiles(dlls);
             String version = dxwrapperConfig[0].get("version", DefaultVersion.WINED3D);
-            if (version.equals(WineInfo.MAIN_WINE_VERSION)) {
-                final String[] dlls = {"d3d8.dll", "d3d9.dll", "d3d10.dll", "d3d10_1.dll", "d3d10core.dll", "d3d11.dll", "d3d12.dll", "d3d12core.dll", "dxgi.dll", "ddraw.dll", "wined3d.dll"};
-                restoreBuiltinDllFiles(dlls);
+            if (!version.equals(WineInfo.MAIN_WINE_VERSION) && !version.contains("1.7.2") && !version.contains("1.10.3") && !version.contains("2.4.1")) {
+                GeneralComponents.extractFile(GeneralComponents.Type.WINED3D, this, version, DefaultVersion.WINED3D);
             }
-            else GeneralComponents.extractFile(GeneralComponents.Type.WINED3D, this, version, DefaultVersion.WINED3D);
         }
         else if (dxwrapper.equals(DXWrappers.DXVK)) {
             final boolean[] hasD3D8DllFile = {false};

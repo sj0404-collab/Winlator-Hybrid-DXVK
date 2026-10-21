@@ -176,5 +176,12 @@ public class WinlatorHybridDxvkTest {
         assertTrue("direct3d.tzst must exist and contain native DirectX compilers", direct3dTzst.isFile() && direct3dTzst.length() > 15_000_000L);
         File hybridDxvk = new File(assetsDir, "dxwrapper/dxvk-1.7.2-2.4.1-hybrid.tzst");
         assertTrue("rebuilt dxvk-1.7.2-2.4.1-hybrid.tzst must be > 5 MB", hybridDxvk.isFile() && hybridDxvk.length() > 5_000_000L);
+
+        // 6. Verify universal touch controls profile (controls-5.icp) and new widescreen dark wallpaper
+        File universalControls = new File(assetsDir, "inputcontrols/profiles/controls-5.icp");
+        assertTrue("controls-5.icp must exist", universalControls.isFile() && universalControls.length() > 1500L);
+        File widescreenWallpaper = new File(assetsDir, "wallpapers/wallpaper-1/image.png");
+        assertTrue("new widescreen wallpaper must exist and be > 100 KB", widescreenWallpaper.isFile() && widescreenWallpaper.length() > 100_000L);
+        assertEquals("DARK,IMAGE,#0f172a,wallpaper-1", com.winlator.core.WineThemeManager.DEFAULT_DESKTOP_THEME);
     }
 }

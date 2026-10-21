@@ -66,12 +66,18 @@ public class TurnipConfigDialog extends ContentDialog {
         envVars.put("MESA_VK_WSI_PRESENT_MODE", presentMode);
 
         String tuDebug = envVars.get("TU_DEBUG");
+        if (!tuDebug.contains("noconform")) {
+            tuDebug = (!tuDebug.isEmpty() ? tuDebug+"," : "")+"noconform";
+        }
         if (isForceSYSMEM(context) && !tuDebug.contains("sysmem")) {
-            envVars.put("TU_DEBUG", (!tuDebug.isEmpty() ? tuDebug+"," : "")+"sysmem");
+            tuDebug = (!tuDebug.isEmpty() ? tuDebug+"," : "")+"sysmem";
         }
         else if (isForceGMEM(context) && !tuDebug.contains("gmem")) {
-            envVars.put("TU_DEBUG", (!tuDebug.isEmpty() ? tuDebug+"," : "")+"gmem");
+            tuDebug = (!tuDebug.isEmpty() ? tuDebug+"," : "")+"gmem";
         }
-        envVars.put("TU_DEBUG", (!tuDebug.isEmpty() ? tuDebug+"," : "")+"deck_emu");
+        if (!tuDebug.contains("deck_emu")) {
+            tuDebug = (!tuDebug.isEmpty() ? tuDebug+"," : "")+"deck_emu";
+        }
+        envVars.put("TU_DEBUG", tuDebug);
     }
 }

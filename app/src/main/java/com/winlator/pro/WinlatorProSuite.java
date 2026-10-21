@@ -1584,19 +1584,7 @@ public class WinlatorProSuite {
 
             if (container != null) {
                 container.setScreenSize(chosenRes);
-                if (apiIdx == 3) {
-                    container.setDXWrapper("wined3d");
-                } else {
-                    container.setDXWrapper("dxvk");
-                    String ver = (apiIdx == 1) ? "2.4.1" : (apiIdx == 2 ? "1.7.2" : com.winlator.core.DefaultVersion.HYBRID_DXVK);
-                    int fr = fpsLimitVal[0] >= 240 ? 0 : fpsLimitVal[0];
-                    KeyValueSet cfg = new KeyValueSet(container.getDXWrapperConfig());
-                    cfg.put("version", ver);
-                    cfg.put("framerate", String.valueOf(fr));
-                    cfg.put("async", "1");
-                    cfg.put("asyncCache", "1");
-                    container.setDXWrapperConfig(cfg.toString());
-                }
+                applySelectedGraphicsWrapperImmediately(context, container, apiIdx, fpsLimitVal[0]);
 
                 if (speedIdx == 0) {
                     container.setBox64Preset("PERFORMANCE");
@@ -1622,6 +1610,91 @@ public class WinlatorProSuite {
 
         root.addView(btnRow);
         dialog.show();
+    }
+
+    /**
+     * Мгновенно применяет выбранный графический враппер (DXVK Hybrid / 2.4.1 / 1.7.2 или WineD3D OpenGL)
+     * с распаковкой соответствующих DLL в system32/syswow64 и синхронизацией ярлыков.
+     */
+    public static void applySelectedGraphicsWrapperImmediately(Context context, Container container, int apiIdx, int fpsLimit) {
+        if (container == null) return;
+        try {
+            boolean turnipSupported = com.winlator.core.GPUHelper.isTurnipSupported(context);
+            String vkDriver = turnipSupported ? com.winlator.container.GraphicsDrivers.TURNIP : com.winlator.container.GraphicsDrivers.VORTEK;
+            int fr = fpsLimit >= 240 ? 0 : fpsLimit;
+
+            KeyValueSet[] cfgs = com.winlator.container.DXWrappers.parseConfigs(container.getDXWrapper(), container.getDXWrapperConfig());
+            File rootDir = RootFS.find(context).getRootDir();
+            File windowsDir = new File(rootDir, RootFS.WINEPREFIX + "/drive_c/windows");
+            File wineDir = new File(rootDir, RootFS.find(context).getWinePath());
+            File wineSystem32Dir = new File(wineDir, "/lib/wine/x86_64-windows");
+            File wineSysWoW64Dir = new File(wineDir, "/lib/wine/i386-windows");
+            File containerSystem32Dir = new File(windowsDir, "system32");
+            File containerSysWoW64Dir = new File(windowsDir, "syswow64");
+
+            if (apiIdx == 3 || apiIdx == 4) {
+                container.setDXWrapper(com.winlator.container.DXWrappers.WINED3D);
+                String oglDriver = (apiIdx == 4) ? com.winlator.container.GraphicsDrivers.ZINK : com.winlator.container.GraphicsDrivers.VIRGL;
+                container.setGraphicsDriver(vkDriver + "," + oglDriver);
+                cfgs[0].put("version", com.winlator.container.WineInfo.MAIN_WINE_VERSION);
+                container.setDXWrapperConfig(cfgs[0].toString() + "|" + cfgs[1].toString());
+                container.putExtra("dxwrapper", "");
+
+                final String[] dlls = {"d3d8.dll", "d3d9.dll", "d3d10.dll", "d3d10_1.dll", "d3d10core.dll", "d3d11.dll", "d3d12.dll", "d3d12core.dll", "dxgi.dll", "ddraw.dll", "wined3d.dll"};
+                for (String dll : dlls) {
+                    File src32 = new File(wineSysWoW64Dir, dll);
+                    File src64 = new File(wineSystem32Dir, dll);
+                    if (src32.isFile()) com.winlator.core.FileUtils.copy(src32, new File(containerSysWoW64Dir, dll));
+                    if (src64.isFile()) com.winlator.core.FileUtils.copy(src64, new File(containerSystem32Dir, dll));
+                }
+            } else {
+                container.setDXWrapper(com.winlator.container.DXWrappers.DXVK);
+                String ver = (apiIdx == 1) ? "2.4.1" : (apiIdx == 2 ? "1.7.2" : com.winlator.core.DefaultVersion.HYBRID_DXVK);
+                if (apiIdx == 2) {
+                    container.setGraphicsDriver(com.winlator.container.GraphicsDrivers.VORTEK + "," + com.winlator.container.GraphicsDrivers.VIRGL);
+                } else {
+                    container.setGraphicsDriver(vkDriver + "," + com.winlator.container.GraphicsDrivers.VIRGL);
+                }
+                cfgs[0].put("version", ver);
+                cfgs[0].put("framerate", String.valueOf(fr));
+                cfgs[0].put("async", "1");
+                cfgs[0].put("asyncCache", "1");
+                container.setDXWrapperConfig(cfgs[0].toString() + "|" + cfgs[1].toString());
+                container.putExtra("dxwrapper", "");
+
+                com.winlator.core.TarCompressorUtils.extract(
+                    com.winlator.core.TarCompressorUtils.Type.ZSTD,
+                    context,
+                    "dxwrapper/dxvk-" + ver + ".tzst",
+                    windowsDir
+                );
+                com.winlator.core.TarCompressorUtils.extract(
+                    com.winlator.core.TarCompressorUtils.Type.ZSTD,
+                    context,
+                    "dxwrapper/d8vk-" + com.winlator.core.DefaultVersion.D8VK + ".tzst",
+                    windowsDir
+                );
+            }
+
+            File desktopDir = container.getDesktopDir();
+            if (desktopDir != null && desktopDir.isDirectory()) {
+                File[] files = desktopDir.listFiles();
+                if (files != null) {
+                    for (File f : files) {
+                        if (f.isFile() && f.getName().endsWith(".desktop")) {
+                            try {
+                                com.winlator.container.Shortcut sc = new com.winlator.container.Shortcut(container, f);
+                                sc.putExtra("dxwrapper", null);
+                                sc.putExtra("dxwrapperConfig", null);
+                                sc.putExtra("graphicsDriver", null);
+                                sc.putExtra("graphicsDriverConfig", null);
+                                sc.saveData();
+                            } catch (Throwable ignored) {}
+                        }
+                    }
+                }
+            }
+        } catch (Throwable ignored) {}
     }
 
     /**
@@ -1944,6 +2017,61 @@ public class WinlatorProSuite {
         actionsScroll.setHorizontalScrollBarEnabled(false);
         // По умолчанию скрываем широкую полосу кнопок, чтобы HUD был маленьким и не мешал!
         actionsScroll.setVisibility(View.GONE);
+
+        final Button btnQuickGamepad = createStyledButton(activity, "🕹️", 0xFF059669, 0xFF34D399);
+        btnQuickGamepad.setTextSize(TypedValue.COMPLEX_UNIT_SP, 9.5f);
+        btnQuickGamepad.setMinHeight(dp(activity, 22));
+        btnQuickGamepad.setMinimumHeight(dp(activity, 22));
+        btnQuickGamepad.setPadding(dp(activity, 5), dp(activity, 1), dp(activity, 5), dp(activity, 1));
+        btnQuickGamepad.setOnClickListener(v -> {
+            if (inputControlsView.getVisibility() == View.VISIBLE) {
+                inputControlsView.setVisibility(View.GONE);
+                inputControlsView.invalidate();
+                AppUtils.showToast(activity, "🕹️ Сенсорные кнопки скрыты (нажмите 🕹️ для показа)");
+            } else {
+                if (inputControlsView.getProfile() == null) {
+                    InputControlsManager icm = new InputControlsManager(activity);
+                    ControlsProfile prof = icm.getProfile(5);
+                    if (prof == null) prof = icm.getProfile(3);
+                    if (prof == null) {
+                        ArrayList<ControlsProfile> all = icm.getProfiles(true);
+                        if (!all.isEmpty()) prof = all.get(0);
+                    }
+                    if (prof != null) inputControlsView.setProfile(prof);
+                }
+                inputControlsView.setShowTouchscreenControls(true);
+                inputControlsView.setVisibility(View.VISIBLE);
+                inputControlsView.invalidate();
+                AppUtils.showToast(activity, "🕹️ Сенсорное управление включено");
+            }
+        });
+        LinearLayout.LayoutParams gpLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        gpLp.rightMargin = dp(activity, 3);
+        statusLine.addView(btnQuickGamepad, gpLp);
+
+        final Button btnCenterCursor = createStyledButton(activity, "🖱️", 0xFF0284C7, 0xFF38BDF8);
+        btnCenterCursor.setTextSize(TypedValue.COMPLEX_UNIT_SP, 9.5f);
+        btnCenterCursor.setMinHeight(dp(activity, 22));
+        btnCenterCursor.setMinimumHeight(dp(activity, 22));
+        btnCenterCursor.setPadding(dp(activity, 5), dp(activity, 1), dp(activity, 5), dp(activity, 1));
+        btnCenterCursor.setOnClickListener(v -> {
+            try {
+                XServer xs = activity.getXServer();
+                if (xs != null) {
+                    xs.injectPointerMove(xs.screenInfo.width / 2, xs.screenInfo.height / 2);
+                    if (xs.getRenderer() != null) {
+                        xs.getRenderer().setCursorVisible(true);
+                        xs.getRenderer().setCursorScale(1.45f);
+                    }
+                }
+                touchpadView.setEnabled(true);
+                touchpadView.setMoveCursorToTouchpoint(true);
+                AppUtils.showToast(activity, "🖱️ Курсор мыши возвращён в центр экрана!");
+            } catch (Throwable ignored) {}
+        });
+        LinearLayout.LayoutParams curLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        curLp.rightMargin = dp(activity, 3);
+        statusLine.addView(btnCenterCursor, curLp);
 
         final Button btnCollapse = createStyledButton(activity, "▾ Меню", 0xFF1E293B, 0xFF475569);
         btnCollapse.setTextSize(TypedValue.COMPLEX_UNIT_SP, 9.5f);

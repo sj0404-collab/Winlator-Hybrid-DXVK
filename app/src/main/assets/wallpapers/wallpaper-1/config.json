@@ -1,5 +1,7 @@
 {
-    "primaryColor": "#90a4ae",
-    "secondaryColor": "#01579b",
-    "orientation": "horizontal"
+    "primaryColor": "#0f172a",
+    "secondaryColor": "#1e1b4b",
+    "orientation": "horizontal",
+    "fullBleed": true,
+    "scale": 1.0
 }
