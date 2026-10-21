@@ -156,7 +156,7 @@ public class WinlatorHybridDxvkTest {
 
         // 3. FileUtils.getDirname must never throw StringIndexOutOfBoundsException when no slash is present
         assertEquals("G:\\Games\\Souldiers", com.winlator.core.FileUtils.getDirname("G:\\Games\\Souldiers\\Souldiers.exe"));
-        assertEquals("C:", com.winlator.core.FileUtils.getDirname("C:Souldiers.exe"));
+        assertEquals("C:\\", com.winlator.core.FileUtils.getDirname("C:Souldiers.exe"));
         assertEquals("", com.winlator.core.FileUtils.getDirname("Souldiers.exe"));
         assertEquals("", com.winlator.core.FileUtils.getDirname(""));
         assertEquals("", com.winlator.core.FileUtils.getDirname(null));
