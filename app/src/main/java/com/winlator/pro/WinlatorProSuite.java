@@ -1,5 +1,12 @@
 package com.winlator.pro;
 
+import android.content.ClipData;
+import android.content.ClipboardManager;
+import android.text.TextUtils;
+import com.winlator.inputcontrols.GamepadState;
+import com.winlator.winhandler.WinHandler;
+import java.io.RandomAccessFile;
+import java.nio.charset.StandardCharsets;
 import android.app.Activity;
 import android.app.ActivityManager;
 import android.app.AlertDialog;
@@ -2053,167 +2060,160 @@ public class WinlatorProSuite {
         ensureRichControlPresetsInstalled(activity);
         applySavedShadersToRenderer(activity);
 
-        // 1. МИНИАТЮРНАЯ КНОПКА НА КРАЮ ЭКРАНА (когда HUD скрыт полностью)
-        final Button edgeRestoreTab = createStyledButton(activity, "🛠️", 0x990F172A, 0xFF38BDF8);
-        edgeRestoreTab.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f);
-        edgeRestoreTab.setPadding(dp(activity, 4), dp(activity, 2), dp(activity, 4), dp(activity, 2));
-        edgeRestoreTab.setMinHeight(dp(activity, 26));
-        edgeRestoreTab.setMinimumHeight(dp(activity, 26));
-        edgeRestoreTab.setVisibility(View.GONE);
-        FrameLayout.LayoutParams edgeLp = new FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.WRAP_CONTENT,
-            ViewGroup.LayoutParams.WRAP_CONTENT,
-            Gravity.TOP | Gravity.START
-        );
-        edgeLp.leftMargin = Math.max(dp(activity, 8), AppUtils.getScreenWidth() - dp(activity, 44));
-        edgeLp.topMargin = dp(activity, 6);
-        edgeRestoreTab.setLayoutParams(edgeLp);
-        makeViewDraggable(edgeRestoreTab, edgeRestoreTab, rootView);
+        // 1. HUD v12.6: одна спокойная полупрозрачная капсула сверху по центру — не перекрывает R2/L2 и
+        //    интерфейс игры, без разноцветных эмодзи. Через 4 с без касаний тускнеет; позиция запоминается.
+        final SharedPreferences hudPrefs = PreferenceManager.getDefaultSharedPreferences(activity);
+        final boolean desktopSession = launchedExecPathOrNull == null || launchedExecPathOrNull.trim().isEmpty();
+        final String exeShortName = desktopSession ? "Рабочий стол" : new File(launchedExecPathOrNull.replace('\\', '/')).getName();
 
-        // 2. КОМПАКТНЫЙ ПЕРЕТАСКИВАЕМЫЙ HUD (по умолчанию свёрнут в маленькую капсулу справа сверху, не закрывает ярлыки слева!)
         final LinearLayout topHudBar = new LinearLayout(activity);
         topHudBar.setOrientation(LinearLayout.VERTICAL);
-        topHudBar.setPadding(dp(activity, 6), dp(activity, 3), dp(activity, 6), dp(activity, 3));
-        topHudBar.setBackground(roundedBg(0xBF0B1120, 0xFF38BDF8, 1, 10, activity));
+        topHudBar.setPadding(dp(activity, 4), dp(activity, 3), dp(activity, 4), dp(activity, 3));
+        topHudBar.setBackground(roundedBg(UI_PANEL_BG, UI_PANEL_STROKE, 1, 17, activity));
         FrameLayout.LayoutParams topLp = new FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT,
             ViewGroup.LayoutParams.WRAP_CONTENT,
             Gravity.TOP | Gravity.START
         );
-        topLp.leftMargin = Math.max(dp(activity, 120), AppUtils.getScreenWidth() - dp(activity, 230));
-        topLp.topMargin = dp(activity, 4);
+        topLp.topMargin = dp(activity, 2);
         topHudBar.setLayoutParams(topLp);
+        topHudBar.setVisibility(View.INVISIBLE);
 
         final LinearLayout statusLine = new LinearLayout(activity);
         statusLine.setOrientation(LinearLayout.HORIZONTAL);
         statusLine.setGravity(Gravity.CENTER_VERTICAL);
+        topHudBar.addView(statusLine);
 
         final TextView tvWatchdog = new TextView(activity);
-        final String exeShortName = (launchedExecPathOrNull != null && !launchedExecPathOrNull.isEmpty())
-            ? new File(launchedExecPathOrNull).getName()
-            : "Рабочий стол";
-        tvWatchdog.setText("✥ 🛠️ " + exeShortName);
-        tvWatchdog.setTextColor(0xFF34D399);
-        tvWatchdog.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f);
-        tvWatchdog.setTypeface(Typeface.DEFAULT_BOLD);
-        tvWatchdog.setPadding(dp(activity, 2), dp(activity, 2), dp(activity, 6), dp(activity, 2));
+        tvWatchdog.setText("⠿  " + exeShortName);
+        tvWatchdog.setTextColor(UI_TEXT_DIM);
+        tvWatchdog.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f);
+        tvWatchdog.setSingleLine(true);
+        tvWatchdog.setEllipsize(TextUtils.TruncateAt.END);
+        tvWatchdog.setMaxWidth(dp(activity, 210));
+        tvWatchdog.setPadding(dp(activity, 8), dp(activity, 4), dp(activity, 6), dp(activity, 4));
         statusLine.addView(tvWatchdog);
 
-        // Делаем капсулу HUD перетаскиваемой пальцем за текстовую полоску!
-        makeViewDraggable(topHudBar, tvWatchdog, rootView);
+        final Button btnQuickGamepad = hudButton(activity, "Геймпад");
+        final Button btnCenterCursor = hudButton(activity, "Мышь");
+        final Button btnCollapse = hudButton(activity, "☰");
+        final Button btnHideAll = hudButton(activity, "✕");
+        for (Button hb : new Button[]{btnQuickGamepad, btnCenterCursor, btnCollapse, btnHideAll}) {
+            LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(activity, 28));
+            blp.leftMargin = dp(activity, 3);
+            statusLine.addView(hb, blp);
+        }
 
         final HorizontalScrollView actionsScroll = new HorizontalScrollView(activity);
         actionsScroll.setHorizontalScrollBarEnabled(false);
-        // По умолчанию скрываем широкую полосу кнопок, чтобы HUD был маленьким и не мешал!
         actionsScroll.setVisibility(View.GONE);
-
-        final Button btnQuickGamepad = createStyledButton(activity, "🕹️", 0xFF059669, 0xFF34D399);
-        btnQuickGamepad.setTextSize(TypedValue.COMPLEX_UNIT_SP, 9.5f);
-        btnQuickGamepad.setMinHeight(dp(activity, 22));
-        btnQuickGamepad.setMinimumHeight(dp(activity, 22));
-        btnQuickGamepad.setPadding(dp(activity, 5), dp(activity, 1), dp(activity, 5), dp(activity, 1));
-        btnQuickGamepad.setOnClickListener(v -> {
-            if (inputControlsView.getVisibility() == View.VISIBLE) {
-                inputControlsView.setVisibility(View.GONE);
-                inputControlsView.invalidate();
-                AppUtils.showToast(activity, "🕹️ Сенсорные кнопки скрыты (нажмите 🕹️ для показа)");
-            } else {
-                if (inputControlsView.getProfile() == null) {
-                    InputControlsManager icm = new InputControlsManager(activity);
-                    ControlsProfile prof = icm.getProfile(5);
-                    if (prof == null) prof = icm.getProfile(3);
-                    if (prof == null) {
-                        ArrayList<ControlsProfile> all = icm.getProfiles(true);
-                        if (!all.isEmpty()) prof = all.get(0);
-                    }
-                    if (prof != null) inputControlsView.setProfile(prof);
-                }
-                inputControlsView.setShowTouchscreenControls(true);
-                inputControlsView.setVisibility(View.VISIBLE);
-                inputControlsView.invalidate();
-                AppUtils.showToast(activity, "🕹️ Сенсорное управление включено");
-            }
-        });
-        LinearLayout.LayoutParams gpLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        gpLp.rightMargin = dp(activity, 3);
-        statusLine.addView(btnQuickGamepad, gpLp);
+        final LinearLayout actionsRow = new LinearLayout(activity);
+        actionsRow.setOrientation(LinearLayout.HORIZONTAL);
+        actionsRow.setPadding(dp(activity, 2), dp(activity, 4), dp(activity, 2), dp(activity, 1));
+        actionsScroll.addView(actionsRow);
+        topHudBar.addView(actionsScroll);
 
         final LinearLayout floatingTouchpadPanel = new LinearLayout(activity);
-        final Button btnCenterCursor = createStyledButton(activity, "🖱️", 0xFF0284C7, 0xFF38BDF8);
-        btnCenterCursor.setTextSize(TypedValue.COMPLEX_UNIT_SP, 9.5f);
-        btnCenterCursor.setMinHeight(dp(activity, 22));
-        btnCenterCursor.setMinimumHeight(dp(activity, 22));
-        btnCenterCursor.setPadding(dp(activity, 5), dp(activity, 1), dp(activity, 5), dp(activity, 1));
+        final LinearLayout overlayEditorBar = new LinearLayout(activity);
+
+        // Маленькая кнопка «☰» вместо HUD, когда его полностью скрыли (её тоже можно перетащить)
+        final Button edgeRestoreTab = hudButton(activity, "☰");
+        edgeRestoreTab.setAlpha(0.55f);
+        edgeRestoreTab.setVisibility(View.GONE);
+        FrameLayout.LayoutParams edgeLp = new FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            dp(activity, 28),
+            Gravity.TOP | Gravity.CENTER_HORIZONTAL
+        );
+        edgeLp.topMargin = dp(activity, 2);
+        edgeRestoreTab.setLayoutParams(edgeLp);
+        makeViewDraggable(edgeRestoreTab, edgeRestoreTab, rootView);
+
+        // Активные режимы подсвечиваются одним спокойным акцентом
+        final Runnable refreshHudStates = () -> {
+            setHudActive(activity, btnQuickGamepad, isGamepadOverlayVisible(inputControlsView));
+            setHudActive(activity, btnCenterCursor, floatingTouchpadPanel.getVisibility() == View.VISIBLE);
+            setHudActive(activity, btnCollapse, actionsScroll.getVisibility() == View.VISIBLE);
+        };
+
+        // Автозатухание: через 4 с без касаний HUD становится полупрозрачным
+        final Handler hudDimHandler = new Handler(Looper.getMainLooper());
+        final Runnable[] hudDim = new Runnable[1];
+        hudDim[0] = () -> {
+            if (actionsScroll.getVisibility() == View.VISIBLE) {
+                hudDimHandler.postDelayed(hudDim[0], 4000);
+                return;
+            }
+            topHudBar.animate().alpha(0.35f).setDuration(350).start();
+        };
+        final Runnable wakeHud = () -> {
+            topHudBar.animate().cancel();
+            topHudBar.setAlpha(1f);
+            refreshHudStates.run();
+            hudDimHandler.removeCallbacks(hudDim[0]);
+            hudDimHandler.postDelayed(hudDim[0], 4000);
+        };
+
+        btnQuickGamepad.setOnClickListener(v -> {
+            if (isGamepadOverlayVisible(inputControlsView)) {
+                hideGamepadOverlay(activity, inputControlsView);
+            } else {
+                // Геймпад и тачпад-мышь не смешиваем: игры Unity иначе прыгают «Клавиатура ⇄ Контроллер»
+                floatingTouchpadPanel.setVisibility(View.GONE);
+                showGamepadOverlay(activity, inputControlsView, touchpadView);
+            }
+            wakeHud.run();
+        });
+
         btnCenterCursor.setOnClickListener(v -> {
             try {
                 XServer xs = activity.getXServer();
-                if (xs != null) {
-                    if (xs.getRenderer() != null) {
-                        xs.getRenderer().setCursorVisible(true);
-                        xs.getRenderer().setCursorScale(1.45f);
-                    }
+                if (xs != null && xs.getRenderer() != null) {
+                    xs.getRenderer().setCursorVisible(true);
+                    xs.getRenderer().setCursorScale(1.45f);
                 }
                 touchpadView.setEnabled(true);
-                // ВАЖНО: отключаем привязку курсора к точке касания посреди экрана, чтобы мышь не бегала за пальцем!
+                // Курсор двигается относительно пальца и не прыгает в точку касания посреди экрана
                 touchpadView.setMoveCursorToTouchpoint(false);
                 if (floatingTouchpadPanel.getVisibility() == View.VISIBLE) {
                     floatingTouchpadPanel.setVisibility(View.GONE);
-                    AppUtils.showToast(activity, "🖱️ Панель Тачпада скрыта");
                 } else {
+                    if (isGamepadOverlayVisible(inputControlsView)) hideGamepadOverlay(activity, inputControlsView);
                     floatingTouchpadPanel.setVisibility(View.VISIBLE);
-                    AppUtils.showToast(activity, "🖱️ Тачпад + Мышь (ЛКМ | ▲ СКМ ▼ | ПКМ) открыты!");
                 }
             } catch (Throwable ignored) {}
+            wakeHud.run();
         });
-        LinearLayout.LayoutParams curLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        curLp.rightMargin = dp(activity, 3);
-        statusLine.addView(btnCenterCursor, curLp);
 
-        final Button btnCollapse = createStyledButton(activity, "▾ Меню", 0xFF1E293B, 0xFF475569);
-        btnCollapse.setTextSize(TypedValue.COMPLEX_UNIT_SP, 9.5f);
-        btnCollapse.setMinHeight(dp(activity, 22));
-        btnCollapse.setMinimumHeight(dp(activity, 22));
-        btnCollapse.setPadding(dp(activity, 6), dp(activity, 1), dp(activity, 6), dp(activity, 1));
-        LinearLayout.LayoutParams colLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        colLp.rightMargin = dp(activity, 4);
-        statusLine.addView(btnCollapse, colLp);
+        btnCollapse.setOnClickListener(v -> {
+            actionsScroll.setVisibility(actionsScroll.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE);
+            wakeHud.run();
+        });
 
-        final Button btnHideAll = createStyledButton(activity, "✕", 0xFF334155, 0xFF64748B);
-        btnHideAll.setTextSize(TypedValue.COMPLEX_UNIT_SP, 9.5f);
-        btnHideAll.setMinHeight(dp(activity, 22));
-        btnHideAll.setMinimumHeight(dp(activity, 22));
-        btnHideAll.setPadding(dp(activity, 5), dp(activity, 1), dp(activity, 5), dp(activity, 1));
         btnHideAll.setOnClickListener(v -> {
+            actionsScroll.setVisibility(View.GONE);
             topHudBar.setVisibility(View.GONE);
             edgeRestoreTab.setVisibility(View.VISIBLE);
         });
-        statusLine.addView(btnHideAll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         edgeRestoreTab.setOnClickListener(v -> {
             edgeRestoreTab.setVisibility(View.GONE);
             topHudBar.setVisibility(View.VISIBLE);
+            wakeHud.run();
         });
 
-        topHudBar.addView(statusLine);
-
-        final LinearLayout actionsRow = new LinearLayout(activity);
-        actionsRow.setOrientation(LinearLayout.HORIZONTAL);
-        actionsRow.setPadding(0, dp(activity, 4), 0, 0);
-
-        Button btnDesktopLauncher = createStyledButton(activity, "🎮 Лаунчер", 0xFF0284C7, 0xFF38BDF8);
-        btnDesktopLauncher.setOnClickListener(v -> showInSessionExePicker(activity, container));
-        actionsRow.addView(btnDesktopLauncher, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT) {{
-            rightMargin = dp(activity, 4);
-        }});
-
-        Button btnGfxStudio = createStyledButton(activity, "🎨 Графика/Шейдеры", 0xFF7C3AED, 0xFFA78BFA);
-        btnGfxStudio.setOnClickListener(v -> showGraphicsFpsShaderStudioDialog(activity, container, activity));
-        actionsRow.addView(btnGfxStudio, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT) {{
-            rightMargin = dp(activity, 4);
-        }});
-
-        final LinearLayout overlayEditorBar = new LinearLayout(activity);
-        Button btnControls = createStyledButton(activity, "🕹️ Оверлей", 0xFF059669, 0xFF34D399);
+        // Меню (☰): Лаунчер · Графика · Оверлей · FPS · Задачи — одинаковые нейтральные кнопки
+        final Button btnDesktopLauncher = hudButton(activity, "Лаунчер");
+        btnDesktopLauncher.setOnClickListener(v -> {
+            wakeHud.run();
+            showInSessionExePicker(activity, container, inputControlsView, touchpadView);
+        });
+        final Button btnGfxStudio = hudButton(activity, "Графика");
+        btnGfxStudio.setOnClickListener(v -> {
+            wakeHud.run();
+            showGraphicsFpsShaderStudioDialog(activity, container, activity);
+        });
+        final Button btnControls = hudButton(activity, "Оверлей");
         btnControls.setOnClickListener(v -> {
             if (overlayEditorBar.getVisibility() == View.VISIBLE) {
                 overlayEditorBar.setVisibility(View.GONE);
@@ -2222,38 +2222,106 @@ public class WinlatorProSuite {
             } else {
                 overlayEditorBar.setVisibility(View.VISIBLE);
                 actionsScroll.setVisibility(View.GONE);
-                btnCollapse.setText("▾ Меню");
+            }
+            wakeHud.run();
+        });
+        final Button btnFpsTest = hudButton(activity, "FPS");
+        btnFpsTest.setOnClickListener(v -> {
+            wakeHud.run();
+            showFpsBenchmarkDialog(activity, container);
+        });
+        final Button btnTasks = hudButton(activity, "Задачи");
+        btnTasks.setOnClickListener(v -> {
+            wakeHud.run();
+            (new TaskManagerDialog(activity)).show();
+        });
+        for (Button ab : new Button[]{btnDesktopLauncher, btnGfxStudio, btnControls, btnFpsTest, btnTasks}) {
+            LinearLayout.LayoutParams alp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(activity, 28));
+            alp.rightMargin = dp(activity, 4);
+            actionsRow.addView(ab, alp);
+        }
+
+        // Перетаскивание HUD за название (позиция сохраняется); короткое касание по названию = меню
+        tvWatchdog.setOnTouchListener(new View.OnTouchListener() {
+            private float offX, offY, downX, downY;
+            private boolean dragging;
+
+            @Override
+            public boolean onTouch(View v, MotionEvent e) {
+                FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) topHudBar.getLayoutParams();
+                switch (e.getActionMasked()) {
+                    case MotionEvent.ACTION_DOWN:
+                        wakeHud.run();
+                        offX = lp.leftMargin - e.getRawX();
+                        offY = lp.topMargin - e.getRawY();
+                        downX = e.getRawX();
+                        downY = e.getRawY();
+                        dragging = false;
+                        return true;
+                    case MotionEvent.ACTION_MOVE:
+                        if (!dragging && (Math.abs(e.getRawX() - downX) > dp(activity, 6) || Math.abs(e.getRawY() - downY) > dp(activity, 6))) {
+                            dragging = true;
+                        }
+                        if (dragging) {
+                            int maxX = Math.max(0, rootView.getWidth() - topHudBar.getWidth());
+                            int maxY = Math.max(0, rootView.getHeight() - topHudBar.getHeight());
+                            lp.gravity = Gravity.TOP | Gravity.START;
+                            lp.leftMargin = Math.max(0, Math.min(maxX, Math.round(e.getRawX() + offX)));
+                            lp.topMargin = Math.max(0, Math.min(maxY, Math.round(e.getRawY() + offY)));
+                            topHudBar.setLayoutParams(lp);
+                        }
+                        return true;
+                    case MotionEvent.ACTION_UP:
+                        if (dragging) {
+                            if (rootView.getWidth() > 0 && rootView.getHeight() > 0) {
+                                hudPrefs.edit()
+                                    .putFloat("hud_pos_x", lp.leftMargin / (float) rootView.getWidth())
+                                    .putFloat("hud_pos_y", lp.topMargin / (float) rootView.getHeight())
+                                    .apply();
+                            }
+                        } else {
+                            btnCollapse.performClick();
+                        }
+                        return true;
+                    case MotionEvent.ACTION_CANCEL:
+                        return true;
+                    default:
+                        return false;
+                }
             }
         });
-        actionsRow.addView(btnControls, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT) {{
-            rightMargin = dp(activity, 4);
-        }});
 
-        Button btnFpsTest = createStyledButton(activity, "📊 FPS", 0xFFD97706, 0xFFFBBF24);
-        btnFpsTest.setOnClickListener(v -> showFpsBenchmarkDialog(activity, container));
-        actionsRow.addView(btnFpsTest, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT) {{
-            rightMargin = dp(activity, 4);
-        }});
-
-        Button btnTasks = createStyledButton(activity, "🛠️ Задачи", 0xFFDC2626, 0xFFF87171);
-        btnTasks.setOnClickListener(v -> (new TaskManagerDialog(activity)).show());
-        actionsRow.addView(btnTasks, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-
-        actionsScroll.addView(actionsRow);
-        topHudBar.addView(actionsScroll);
-
-        btnCollapse.setOnClickListener(v -> {
-            if (actionsScroll.getVisibility() == View.VISIBLE) {
-                actionsScroll.setVisibility(View.GONE);
-                btnCollapse.setText("▾ Меню");
-            } else {
-                actionsScroll.setVisibility(View.VISIBLE);
-                btnCollapse.setText("▴ Свернуть");
+        // Пока пользователь не перетаскивал HUD — держим его строго по центру (ширина меняется с текстом ОЗУ/меню)
+        topHudBar.addOnLayoutChangeListener((v, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) -> {
+            if ((right - left) == (oldRight - oldLeft)) return;
+            if (hudPrefs.getFloat("hud_pos_x", -1f) >= 0f) return;
+            final FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) topHudBar.getLayoutParams();
+            final int centered = Math.max(0, (rootView.getWidth() - (right - left)) / 2);
+            if (lp.leftMargin != centered) {
+                lp.leftMargin = centered;
+                topHudBar.post(() -> topHudBar.setLayoutParams(lp));
             }
         });
 
         rootView.addView(topHudBar);
         rootView.addView(edgeRestoreTab);
+        topHudBar.post(() -> {
+            FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) topHudBar.getLayoutParams();
+            int w = rootView.getWidth();
+            int h = rootView.getHeight();
+            float px = hudPrefs.getFloat("hud_pos_x", -1f);
+            float py = hudPrefs.getFloat("hud_pos_y", -1f);
+            if (px >= 0f && py >= 0f && w > 0 && h > 0) {
+                lp.leftMargin = Math.max(0, Math.min(w - topHudBar.getWidth(), Math.round(px * w)));
+                lp.topMargin = Math.max(0, Math.min(h - topHudBar.getHeight(), Math.round(py * h)));
+            } else {
+                lp.leftMargin = Math.max(0, (w - topHudBar.getWidth()) / 2);
+                lp.topMargin = dp(activity, 2);
+            }
+            topHudBar.setLayoutParams(lp);
+            topHudBar.setVisibility(View.VISIBLE);
+            wakeHud.run();
+        });
 
         // 3. КОМПАКТНАЯ ПЕРЕТАСКИВАЕМАЯ И СКРЫВАЕМАЯ ПАНЕЛЬ ОВЕРЛЕЯ УПРАВЛЕНИЯ
         setupLiveOverlayCustomizerPanel(activity, rootView, overlayEditorBar, inputControlsView, touchpadView);
@@ -2262,10 +2330,11 @@ public class WinlatorProSuite {
         setupFloatingTouchpadAndMouseWidget(activity, rootView, floatingTouchpadPanel, touchpadView);
 
         // 5. ПОТОКОБЕЗОПАСНЫЙ МОНИТОР ОКОН И ОЗУ (В ФОНОВОМ ПОТОКЕ С tryLock, БЕЗ БЛОКИРОВКИ UI И ANR!)
-        startLiveProcessAndFreezeWatchdog(activity, tvWatchdog, exeShortName);
+        startLiveProcessAndFreezeWatchdog(activity, tvWatchdog, exeShortName, container);
     }
 
-    private static void showInSessionExePicker(final XServerDisplayActivity activity, final Container container) {
+    private static void showInSessionExePicker(final XServerDisplayActivity activity, final Container container,
+                                               final InputControlsView inputControlsView, final TouchpadView touchpadView) {
         final List<DiscoveredProgram> list = scanAllAvailableProgramsAndGames(container);
         String[] labels = new String[list.size()];
         for (int i = 0; i < list.size(); i++) {
@@ -2274,7 +2343,7 @@ public class WinlatorProSuite {
         }
 
         new AlertDialog.Builder(activity)
-            .setTitle("🎮 Запустить игру / программу на этом Рабочем столе")
+            .setTitle("Запустить игру / программу")
             .setItems(labels, (dialog, which) -> {
                 DiscoveredProgram chosen = list.get(which);
                 prepareGameFolderAndDependencies(activity, container, chosen.file);
@@ -2283,7 +2352,12 @@ public class WinlatorProSuite {
                     String cmd = "C:\\windows\\system32\\cmd.exe";
                     String args = "/c start \"\" /D \"" + chosen.workingDosDir + "\" \"" + chosen.dosPath + "\"";
                     activity.getWinHandler().exec(cmd, args);
-                    AppUtils.showToast(activity, "🚀 Запущено с рабочей папкой: " + chosen.name);
+                    AppUtils.showToast(activity, "Запущено: " + chosen.name);
+                    // v12.6: для игр сразу показываем чистый геймпад (скрывается кнопкой «Геймпад» в HUD)
+                    if (chosen.categoryLabel != null && chosen.categoryLabel.contains("Игра")
+                            && PreferenceManager.getDefaultSharedPreferences(activity).getBoolean("auto_show_touch_controls", true)) {
+                        showGamepadOverlay(activity, inputControlsView, touchpadView);
+                    }
                 }
             })
             .setNegativeButton("Закрыть", null)
@@ -2295,20 +2369,237 @@ public class WinlatorProSuite {
             File profilesDir = InputControlsManager.getProfilesDir(context);
             File p5 = new File(profilesDir, "controls-5.icp");
             File p6 = new File(profilesDir, "controls-6.icp");
-            boolean needRefresh5 = !p5.isFile();
-            if (p5.isFile()) {
-                String s5 = FileUtils.readString(p5);
-                if (s5 == null || !s5.contains("ТАЧПАД") || !s5.contains("MOUSE_MIDDLE_BUTTON") || !s5.contains("MOUSE_SCROLL_UP")) {
-                    needRefresh5 = true;
-                }
-            }
-            if (needRefresh5) {
+            SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(context);
+            // v12.6: пресет 5 = чистый геймпад Xbox. Перезаписываем один раз (флаг в настройках),
+            // дальше пользовательские правки пресета сохраняются.
+            if (!p5.isFile() || !prefs.getBoolean("preset5_pure_gamepad_v2", false)) {
                 FileUtils.copy(context, "inputcontrols/profiles/controls-5.icp", p5);
+                prefs.edit().putBoolean("preset5_pure_gamepad_v2", true).apply();
             }
             if (!p6.isFile()) {
                 FileUtils.copy(context, "inputcontrols/profiles/controls-6.icp", p6);
             }
         } catch (Throwable ignored) {}
+    }
+
+    // ===================== v12.6: нейтральная палитра, геймпад-оверлей, сбои Unity =====================
+    private static final int UI_PANEL_BG = 0xE01C1D21;
+    private static final int UI_PANEL_STROKE = 0x2EFFFFFF;
+    private static final int UI_BTN_BG = 0x1AFFFFFF;
+    private static final int UI_BTN_STROKE = 0x24FFFFFF;
+    private static final int UI_BTN_ACTIVE_BG = 0x3D8AB4F8;
+    private static final int UI_ACCENT = 0xFF8AB4F8;
+    private static final int UI_TEXT = 0xFFE8EAED;
+    private static final int UI_TEXT_DIM = 0xFFA8ADB4;
+    private static volatile boolean unityCrashShown = false;
+
+    private static Button hudButton(Context ctx, String text) {
+        Button b = createStyledButton(ctx, text, UI_BTN_BG, UI_BTN_STROKE);
+        b.setAllCaps(false);
+        b.setTypeface(Typeface.DEFAULT);
+        b.setTextColor(UI_TEXT);
+        b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f);
+        b.setMinWidth(0);
+        b.setMinimumWidth(0);
+        b.setMinHeight(dp(ctx, 28));
+        b.setMinimumHeight(dp(ctx, 28));
+        b.setPadding(dp(ctx, 10), 0, dp(ctx, 10), 0);
+        b.setStateListAnimator(null);
+        b.setBackground(roundedBg(UI_BTN_BG, UI_BTN_STROKE, 1, 14, ctx));
+        return b;
+    }
+
+    private static void setHudActive(Context ctx, Button b, boolean active) {
+        b.setBackground(roundedBg(active ? UI_BTN_ACTIVE_BG : UI_BTN_BG, active ? UI_ACCENT : UI_BTN_STROKE, 1, 14, ctx));
+        b.setTextColor(active ? UI_ACCENT : UI_TEXT);
+    }
+
+    private static boolean isGamepadOverlayVisible(InputControlsView icv) {
+        return icv != null && icv.getVisibility() == View.VISIBLE && icv.getProfile() != null && icv.isShowTouchscreenControls();
+    }
+
+    /** Показывает чистый геймпад (пресет 5 «Геймпад Xbox») — без клавиатуры и мыши. */
+    public static void showGamepadOverlay(XServerDisplayActivity activity, InputControlsView icv, TouchpadView touchpadView) {
+        if (activity == null || icv == null) return;
+        try {
+            ControlsProfile prof = icv.getProfile();
+            if (prof == null || !prof.isVirtualGamepad()) {
+                InputControlsManager icm = new InputControlsManager(activity);
+                ControlsProfile pad = icm.getProfile(5);
+                if (pad == null) pad = icm.getProfile(3);
+                if (pad != null) prof = pad;
+            }
+            if (prof == null) {
+                AppUtils.showToast(activity, "Профиль геймпада не найден");
+                return;
+            }
+            icv.setShowTouchscreenControls(true);
+            activity.showInputControls(prof);
+        } catch (Throwable t) {
+            AppUtils.showToast(activity, "Не удалось показать геймпад: " + t.getMessage());
+        }
+    }
+
+    /** Прячет геймпад и сначала отпускает все виртуальные кнопки/стики, чтобы в игре ничего не «залипло». */
+    public static void hideGamepadOverlay(XServerDisplayActivity activity, InputControlsView icv) {
+        if (activity == null || icv == null) return;
+        try {
+            ControlsProfile prof = icv.getProfile();
+            if (prof != null) {
+                GamepadState st = prof.getGamepadState();
+                if (st != null) {
+                    st.buttons = 0;
+                    st.thumbLX = 0; st.thumbLY = 0; st.thumbRX = 0; st.thumbRY = 0;
+                    st.triggerL = 0; st.triggerR = 0;
+                    Arrays.fill(st.dpad, false);
+                    WinHandler wh = activity.getWinHandler();
+                    if (wh != null && prof.isVirtualGamepad()) wh.gamepadHandler.sendGamepadState(prof);
+                }
+            }
+            icv.setEditMode(false);
+            activity.hideInputControls();
+        } catch (Throwable t) {
+            icv.setVisibility(View.GONE);
+        }
+    }
+
+    /** Окно UnityCrashHandler = игра упала. Даём ему 3 с дописать error.log, закрываем и показываем причину. */
+    private static void handleUnityCrash(final XServerDisplayActivity activity, final Container container) {
+        final Handler h = new Handler(Looper.getMainLooper());
+        AppUtils.showToast(activity, "Игра Unity аварийно закрылась — собираю лог…");
+        h.postDelayed(() -> {
+            try {
+                WinHandler wh = activity.getWinHandler();
+                if (wh != null) {
+                    wh.killProcess("UnityCrashHandler64.exe");
+                    wh.killProcess("UnityCrashHandler32.exe");
+                }
+            } catch (Throwable ignored) {}
+            Executors.newSingleThreadExecutor().execute(() -> {
+                final String report = collectUnityCrashReport(container);
+                h.post(() -> showUnityCrashDialog(activity, report));
+            });
+        }, 3000);
+    }
+
+    private static File[] listDirs(File dir) {
+        File[] f = dir != null ? dir.listFiles(File::isDirectory) : null;
+        return f != null ? f : new File[0];
+    }
+
+    /** error.log: %TEMP%\<Компания>\<Игра>\Crashes\Crash_*\error.log ; Player.log: AppData\LocalLow\<Компания>\<Игра>\Player.log */
+    private static String collectUnityCrashReport(Container container) {
+        StringBuilder sb = new StringBuilder();
+        try {
+            File driveC = container != null ? new File(container.getRootDir(), ".wine/drive_c") : null;
+            File newestError = null;
+            File newestPlayerLog = null;
+            for (File user : listDirs(driveC != null ? new File(driveC, "users") : null)) {
+                for (File company : listDirs(new File(user, "AppData/Local/Temp"))) {
+                    for (File product : listDirs(company)) {
+                        for (File crash : listDirs(new File(product, "Crashes"))) {
+                            File err = new File(crash, "error.log");
+                            if (err.isFile() && (newestError == null || err.lastModified() > newestError.lastModified())) newestError = err;
+                        }
+                    }
+                }
+                for (File company : listDirs(new File(user, "AppData/LocalLow"))) {
+                    for (File product : listDirs(company)) {
+                        File pl = new File(product, "Player.log");
+                        if (pl.isFile() && (newestPlayerLog == null || pl.lastModified() > newestPlayerLog.lastModified())) newestPlayerLog = pl;
+                    }
+                }
+            }
+            if (newestError != null) {
+                sb.append("== error.log (").append(newestError.getParentFile().getName()).append(") ==\n");
+                sb.append(readHeadLines(newestError, 30)).append('\n');
+            }
+            if (newestPlayerLog != null) {
+                sb.append("== Player.log: ").append(newestPlayerLog.getParentFile().getName()).append(" ==\n");
+                sb.append(readImportantTail(newestPlayerLog)).append('\n');
+            }
+            if (sb.length() == 0) sb.append("Логи Unity не найдены (drive_c/users/*/AppData).\n");
+        } catch (Throwable t) {
+            sb.append("Не удалось прочитать логи: ").append(t).append('\n');
+        }
+        return sb.toString();
+    }
+
+    private static String readHeadLines(File f, int maxLines) {
+        StringBuilder sb = new StringBuilder();
+        try (java.io.BufferedReader br = new java.io.BufferedReader(new java.io.InputStreamReader(new java.io.FileInputStream(f), StandardCharsets.UTF_8))) {
+            String line;
+            int n = 0;
+            while ((line = br.readLine()) != null && n < maxLines) {
+                if (line.trim().isEmpty()) continue;
+                sb.append(line).append('\n');
+                n++;
+            }
+        } catch (Throwable t) {
+            sb.append("(не удалось прочитать ").append(f.getName()).append(")\n");
+        }
+        return sb.toString();
+    }
+
+    /** Из хвоста Player.log берём строки с ошибками (последние 40) + последние 15 строк перед падением. */
+    private static String readImportantTail(File f) {
+        try (RandomAccessFile raf = new RandomAccessFile(f, "r")) {
+            long len = raf.length();
+            long start = Math.max(0L, len - 256L * 1024L);
+            raf.seek(start);
+            byte[] buf = new byte[(int) (len - start)];
+            raf.readFully(buf);
+            String[] lines = new String(buf, StandardCharsets.UTF_8).split("\r?\n");
+            String[] keys = {"exception", "error", "crash", "failed", "fatal", "access violation", "d3d", "dxgi",
+                             "vulkan", "unable", "cannot", "not supported", "timezone", "nullreference", "missing"};
+            List<String> important = new ArrayList<>();
+            for (String line : lines) {
+                String low = line.toLowerCase(Locale.ROOT);
+                for (String k : keys) {
+                    if (low.contains(k)) {
+                        important.add(line);
+                        break;
+                    }
+                }
+            }
+            StringBuilder sb = new StringBuilder();
+            for (int i = Math.max(0, important.size() - 40); i < important.size(); i++) sb.append(important.get(i)).append('\n');
+            sb.append("-- последние строки --\n");
+            for (int i = Math.max(0, lines.length - 15); i < lines.length; i++) sb.append(lines[i]).append('\n');
+            return sb.toString();
+        } catch (Throwable t) {
+            return "(не удалось прочитать " + f.getName() + ")\n";
+        }
+    }
+
+    private static void showUnityCrashDialog(final XServerDisplayActivity activity, final String report) {
+        if (activity == null || activity.isFinishing() || activity.isDestroyed()) return;
+        final String advice = "Игра закрылась с ошибкой, Unity показал окно сбоя (UnityCrashHandler) — оно закрыто автоматически.\n\n"
+            + "Что попробовать:\n"
+            + "• В настройках контейнера смените DX-обёртку: DXVK 2.4.1 ⇄ DXVK 1.7.2 ⇄ WineD3D и запустите снова.\n"
+            + "• Если падает сразу на заставке — включите в контейнере d3dcompiler_47 / проверьте часовой пояс.\n"
+            + "• Нажмите «Скопировать» и пришлите текст — по нему видна точная причина.\n\n";
+        final String full = advice + report;
+        TextView tv = new TextView(activity);
+        tv.setText(full);
+        tv.setTextIsSelectable(true);
+        tv.setTypeface(Typeface.MONOSPACE);
+        tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f);
+        tv.setPadding(dp(activity, 16), dp(activity, 8), dp(activity, 16), dp(activity, 8));
+        ScrollView sv = new ScrollView(activity);
+        sv.addView(tv);
+        new AlertDialog.Builder(activity)
+            .setTitle("Сбой игры (Unity)")
+            .setView(sv)
+            .setPositiveButton("Скопировать", (d, w) -> {
+                try {
+                    ClipboardManager cm = (ClipboardManager) activity.getSystemService(Context.CLIPBOARD_SERVICE);
+                    if (cm != null) cm.setPrimaryClip(ClipData.newPlainText("Unity crash log", report));
+                    AppUtils.showToast(activity, "Лог скопирован");
+                } catch (Throwable ignored) {}
+            })
+            .setNegativeButton("Закрыть", null)
+            .show();
     }
 
     /**
@@ -2326,7 +2617,7 @@ public class WinlatorProSuite {
     ) {
         widget.setOrientation(LinearLayout.VERTICAL);
         widget.setPadding(dp(activity, 6), dp(activity, 5), dp(activity, 6), dp(activity, 6));
-        widget.setBackground(roundedBg(0xD80B1120, 0xFF38BDF8, 1, 12, activity));
+        widget.setBackground(roundedBg(UI_PANEL_BG, UI_PANEL_STROKE, 1, 14, activity));
         widget.setVisibility(View.GONE);
 
         int wPx = dp(activity, 236);
@@ -2345,15 +2636,15 @@ public class WinlatorProSuite {
         header.setGravity(Gravity.CENTER_VERTICAL);
 
         TextView tvTitle = new TextView(activity);
-        tvTitle.setText("✥ 🖱️ Тачпад (тяните)");
-        tvTitle.setTextColor(0xFF38BDF8);
+        tvTitle.setText("⠿  Тачпад");
+        tvTitle.setTextColor(UI_TEXT_DIM);
         tvTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f);
         tvTitle.setTypeface(Typeface.DEFAULT_BOLD);
         tvTitle.setPadding(dp(activity, 2), dp(activity, 1), dp(activity, 4), dp(activity, 2));
         header.addView(tvTitle, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         makeViewDraggable(widget, tvTitle, rootView);
 
-        Button btnCenter = createStyledButton(activity, "🎯 В центр", 0xFF1E293B, 0xFF38BDF8);
+        Button btnCenter = createStyledButton(activity, "В центр", UI_BTN_BG, UI_BTN_STROKE);
         btnCenter.setTextSize(TypedValue.COMPLEX_UNIT_SP, 9f);
         btnCenter.setMinHeight(dp(activity, 20));
         btnCenter.setMinimumHeight(dp(activity, 20));
@@ -2370,7 +2661,7 @@ public class WinlatorProSuite {
             rightMargin = dp(activity, 4);
         }});
 
-        Button btnHide = createStyledButton(activity, "✕", 0xFF334155, 0xFF64748B);
+        Button btnHide = createStyledButton(activity, "✕", UI_BTN_BG, UI_BTN_STROKE);
         btnHide.setTextSize(TypedValue.COMPLEX_UNIT_SP, 9f);
         btnHide.setMinHeight(dp(activity, 20));
         btnHide.setMinimumHeight(dp(activity, 20));
@@ -2381,11 +2672,11 @@ public class WinlatorProSuite {
 
         // Сенсорная поверхность ТАЧПАДА
         final TextView padSurface = new TextView(activity);
-        padSurface.setText("🖱️ ТАЧПАД\n(водите пальцем • тап = ЛКМ)");
-        padSurface.setTextColor(0xB3E2E8F0);
+        padSurface.setText("Водите пальцем • тап = ЛКМ");
+        padSurface.setTextColor(0x99E8EAED);
         padSurface.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f);
         padSurface.setGravity(Gravity.CENTER);
-        padSurface.setBackground(roundedBg(0xCC1E293B, 0xFF38BDF8, 1, 8, activity));
+        padSurface.setBackground(roundedBg(0x14FFFFFF, UI_PANEL_STROKE, 1, 10, activity));
         LinearLayout.LayoutParams padLp = new LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
             dp(activity, 105)
@@ -2409,7 +2700,7 @@ public class WinlatorProSuite {
                         lastX = downX = event.getX();
                         lastY = downY = event.getY();
                         downTime = System.currentTimeMillis();
-                        padSurface.setBackground(roundedBg(0xEE0F172A, 0xFF34D399, 1, 8, activity));
+                        padSurface.setBackground(roundedBg(0x26FFFFFF, UI_ACCENT, 1, 10, activity));
                         return true;
 
                     case MotionEvent.ACTION_MOVE:
@@ -2430,7 +2721,7 @@ public class WinlatorProSuite {
 
                     case MotionEvent.ACTION_UP:
                     case MotionEvent.ACTION_CANCEL:
-                        padSurface.setBackground(roundedBg(0xCC1E293B, 0xFF38BDF8, 1, 8, activity));
+                        padSurface.setBackground(roundedBg(0x14FFFFFF, UI_PANEL_STROKE, 1, 10, activity));
                         long dt = System.currentTimeMillis() - downTime;
                         double dist = Math.hypot(event.getX() - downX, event.getY() - downY);
                         if (event.getActionMasked() == MotionEvent.ACTION_UP && dt < 210 && dist < dp(activity, 8)) {
@@ -2450,7 +2741,7 @@ public class WinlatorProSuite {
         mouseButtonsRow.setGravity(Gravity.CENTER_VERTICAL);
 
         // 1. Левая кнопка мыши (ЛКМ) — слева!
-        final Button btnLmb = createStyledButton(activity, "ЛКМ\n(Левая)", 0xFF0284C7, 0xFF38BDF8);
+        final Button btnLmb = createStyledButton(activity, "ЛКМ", UI_BTN_BG, UI_BTN_STROKE);
         btnLmb.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f);
         btnLmb.setMinHeight(dp(activity, 68));
         btnLmb.setMinimumHeight(dp(activity, 68));
@@ -2458,10 +2749,10 @@ public class WinlatorProSuite {
             XServer xs = activity.getXServer();
             if (xs == null) return true;
             if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
-                btnLmb.setBackground(roundedBg(0xFF059669, 0xFF34D399, 1, 8, activity));
+                btnLmb.setBackground(roundedBg(UI_BTN_ACTIVE_BG, UI_ACCENT, 1, 8, activity));
                 xs.injectPointerButtonPress(Pointer.Button.BUTTON_LEFT);
             } else if (event.getActionMasked() == MotionEvent.ACTION_UP || event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
-                btnLmb.setBackground(roundedBg(0xFF0284C7, 0xFF38BDF8, 1, 8, activity));
+                btnLmb.setBackground(roundedBg(UI_BTN_BG, UI_BTN_STROKE, 1, 8, activity));
                 xs.injectPointerButtonRelease(Pointer.Button.BUTTON_LEFT);
             }
             return true;
@@ -2504,7 +2795,7 @@ public class WinlatorProSuite {
             }
         };
 
-        final Button btnScrollUp = createStyledButton(activity, "▲", 0xFF334155, 0xFF94A3B8);
+        final Button btnScrollUp = createStyledButton(activity, "▲", UI_BTN_BG, UI_BTN_STROKE);
         btnScrollUp.setTextSize(TypedValue.COMPLEX_UNIT_SP, 9.5f);
         btnScrollUp.setPadding(0, 0, 0, 0);
         btnScrollUp.setMinHeight(dp(activity, 21));
@@ -2512,12 +2803,12 @@ public class WinlatorProSuite {
         btnScrollUp.setOnTouchListener((v, event) -> {
             if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
                 scrollUpHeld[0] = true;
-                btnScrollUp.setBackground(roundedBg(0xFF059669, 0xFF34D399, 1, 6, activity));
+                btnScrollUp.setBackground(roundedBg(UI_BTN_ACTIVE_BG, UI_ACCENT, 1, 6, activity));
                 repeatScrollUp.run();
             } else if (event.getActionMasked() == MotionEvent.ACTION_UP || event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
                 scrollUpHeld[0] = false;
                 scrollHandler.removeCallbacks(repeatScrollUp);
-                btnScrollUp.setBackground(roundedBg(0xFF334155, 0xFF94A3B8, 1, 6, activity));
+                btnScrollUp.setBackground(roundedBg(UI_BTN_BG, UI_BTN_STROKE, 1, 6, activity));
             }
             return true;
         });
@@ -2525,7 +2816,7 @@ public class WinlatorProSuite {
             bottomMargin = dp(activity, 2);
         }});
 
-        final Button btnMmb = createStyledButton(activity, "СКМ", 0xFF475569, 0xFFFACC15);
+        final Button btnMmb = createStyledButton(activity, "СКМ", UI_BTN_BG, UI_BTN_STROKE);
         btnMmb.setTextSize(TypedValue.COMPLEX_UNIT_SP, 9.5f);
         btnMmb.setPadding(0, 0, 0, 0);
         btnMmb.setMinHeight(dp(activity, 22));
@@ -2534,10 +2825,10 @@ public class WinlatorProSuite {
             XServer xs = activity.getXServer();
             if (xs == null) return true;
             if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
-                btnMmb.setBackground(roundedBg(0xFFD97706, 0xFFFACC15, 1, 6, activity));
+                btnMmb.setBackground(roundedBg(UI_BTN_ACTIVE_BG, UI_ACCENT, 1, 6, activity));
                 xs.injectPointerButtonPress(Pointer.Button.BUTTON_MIDDLE);
             } else if (event.getActionMasked() == MotionEvent.ACTION_UP || event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
-                btnMmb.setBackground(roundedBg(0xFF475569, 0xFFFACC15, 1, 6, activity));
+                btnMmb.setBackground(roundedBg(UI_BTN_BG, UI_BTN_STROKE, 1, 6, activity));
                 xs.injectPointerButtonRelease(Pointer.Button.BUTTON_MIDDLE);
             }
             return true;
@@ -2546,7 +2837,7 @@ public class WinlatorProSuite {
             bottomMargin = dp(activity, 2);
         }});
 
-        final Button btnScrollDown = createStyledButton(activity, "▼", 0xFF334155, 0xFF94A3B8);
+        final Button btnScrollDown = createStyledButton(activity, "▼", UI_BTN_BG, UI_BTN_STROKE);
         btnScrollDown.setTextSize(TypedValue.COMPLEX_UNIT_SP, 9.5f);
         btnScrollDown.setPadding(0, 0, 0, 0);
         btnScrollDown.setMinHeight(dp(activity, 21));
@@ -2554,12 +2845,12 @@ public class WinlatorProSuite {
         btnScrollDown.setOnTouchListener((v, event) -> {
             if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
                 scrollDownHeld[0] = true;
-                btnScrollDown.setBackground(roundedBg(0xFF059669, 0xFF34D399, 1, 6, activity));
+                btnScrollDown.setBackground(roundedBg(UI_BTN_ACTIVE_BG, UI_ACCENT, 1, 6, activity));
                 repeatScrollDown.run();
             } else if (event.getActionMasked() == MotionEvent.ACTION_UP || event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
                 scrollDownHeld[0] = false;
                 scrollHandler.removeCallbacks(repeatScrollDown);
-                btnScrollDown.setBackground(roundedBg(0xFF334155, 0xFF94A3B8, 1, 6, activity));
+                btnScrollDown.setBackground(roundedBg(UI_BTN_BG, UI_BTN_STROKE, 1, 6, activity));
             }
             return true;
         });
@@ -2570,7 +2861,7 @@ public class WinlatorProSuite {
         }});
 
         // 3. Правая кнопка мыши (ПКМ) — справа!
-        final Button btnRmb = createStyledButton(activity, "ПКМ\n(Правая)", 0xFF7C3AED, 0xFFA78BFA);
+        final Button btnRmb = createStyledButton(activity, "ПКМ", UI_BTN_BG, UI_BTN_STROKE);
         btnRmb.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f);
         btnRmb.setMinHeight(dp(activity, 68));
         btnRmb.setMinimumHeight(dp(activity, 68));
@@ -2578,10 +2869,10 @@ public class WinlatorProSuite {
             XServer xs = activity.getXServer();
             if (xs == null) return true;
             if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
-                btnRmb.setBackground(roundedBg(0xFF059669, 0xFF34D399, 1, 8, activity));
+                btnRmb.setBackground(roundedBg(UI_BTN_ACTIVE_BG, UI_ACCENT, 1, 8, activity));
                 xs.injectPointerButtonPress(Pointer.Button.BUTTON_RIGHT);
             } else if (event.getActionMasked() == MotionEvent.ACTION_UP || event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
-                btnRmb.setBackground(roundedBg(0xFF7C3AED, 0xFFA78BFA, 1, 8, activity));
+                btnRmb.setBackground(roundedBg(UI_BTN_BG, UI_BTN_STROKE, 1, 8, activity));
                 xs.injectPointerButtonRelease(Pointer.Button.BUTTON_RIGHT);
             }
             return true;
@@ -2601,7 +2892,7 @@ public class WinlatorProSuite {
     ) {
         panel.setOrientation(LinearLayout.VERTICAL);
         panel.setPadding(dp(activity, 8), dp(activity, 5), dp(activity, 8), dp(activity, 5));
-        panel.setBackground(roundedBg(0xD90F172A, 0xFF10B981, 1, 10, activity));
+        panel.setBackground(roundedBg(UI_PANEL_BG, UI_PANEL_STROKE, 1, 14, activity));
         panel.setVisibility(View.GONE);
 
         FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
@@ -2619,8 +2910,8 @@ public class WinlatorProSuite {
         headerBar.setGravity(Gravity.CENTER_VERTICAL);
 
         final TextView tvDragHandle = new TextView(activity);
-        tvDragHandle.setText("✥ 🕹️ Оверлей (тяните сюда пальцем)");
-        tvDragHandle.setTextColor(0xFF34D399);
+        tvDragHandle.setText("⠿  Редактор кнопок");
+        tvDragHandle.setTextColor(UI_TEXT_DIM);
         tvDragHandle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f);
         tvDragHandle.setTypeface(Typeface.DEFAULT_BOLD);
         tvDragHandle.setPadding(dp(activity, 2), dp(activity, 2), dp(activity, 8), dp(activity, 2));
@@ -2630,7 +2921,7 @@ public class WinlatorProSuite {
         final LinearLayout bodyContainer = new LinearLayout(activity);
         bodyContainer.setOrientation(LinearLayout.VERTICAL);
 
-        final Button btnMinOverlay = createStyledButton(activity, "➖ Частично скрыть", 0xFF1E293B, 0xFF475569);
+        final Button btnMinOverlay = createStyledButton(activity, "Свернуть", UI_BTN_BG, UI_BTN_STROKE);
         btnMinOverlay.setTextSize(TypedValue.COMPLEX_UNIT_SP, 9.5f);
         btnMinOverlay.setMinHeight(dp(activity, 22));
         btnMinOverlay.setMinimumHeight(dp(activity, 22));
@@ -2638,17 +2929,17 @@ public class WinlatorProSuite {
         btnMinOverlay.setOnClickListener(v -> {
             if (bodyContainer.getVisibility() == View.VISIBLE) {
                 bodyContainer.setVisibility(View.GONE);
-                btnMinOverlay.setText("➕ Развернуть");
+                btnMinOverlay.setText("Развернуть");
             } else {
                 bodyContainer.setVisibility(View.VISIBLE);
-                btnMinOverlay.setText("➖ Частично скрыть");
+                btnMinOverlay.setText("Свернуть");
             }
         });
         headerBar.addView(btnMinOverlay, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT) {{
             rightMargin = dp(activity, 4);
         }});
 
-        Button btnCloseOverlay = createStyledButton(activity, "✕ Скрыть весь", 0xFF334155, 0xFF64748B);
+        Button btnCloseOverlay = createStyledButton(activity, "✕", UI_BTN_BG, UI_BTN_STROKE);
         btnCloseOverlay.setTextSize(TypedValue.COMPLEX_UNIT_SP, 9.5f);
         btnCloseOverlay.setMinHeight(dp(activity, 22));
         btnCloseOverlay.setMinimumHeight(dp(activity, 22));
@@ -2673,20 +2964,20 @@ public class WinlatorProSuite {
         final ArrayList<ControlsProfile> profiles = icm.getProfiles(false);
 
         for (final ControlsProfile prof : profiles) {
-            Button bProf = createStyledButton(activity, "🎮 " + prof.getName(), 0xFF1E293B, 0xFF38BDF8);
+            Button bProf = createStyledButton(activity, prof.getName(), UI_BTN_BG, UI_BTN_STROKE);
             bProf.setOnClickListener(v -> {
                 inputControlsView.setVisibility(View.VISIBLE);
                 inputControlsView.setProfile(prof);
                 inputControlsView.setShowTouchscreenControls(true);
                 inputControlsView.invalidate();
-                AppUtils.showToast(activity, "🕹️ Профиль: " + prof.getName());
+                AppUtils.showToast(activity, "Профиль: " + prof.getName());
             });
             rowPresets.addView(bProf, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT) {{
                 rightMargin = dp(activity, 5);
             }});
         }
 
-        Button bHideControls = createStyledButton(activity, "🚫 Выкл кнопки", 0xFF334155, 0xFF64748B);
+        Button bHideControls = createStyledButton(activity, "Выкл. кнопки", UI_BTN_BG, UI_BTN_STROKE);
         bHideControls.setOnClickListener(v -> {
             inputControlsView.setEditMode(false);
             inputControlsView.setVisibility(View.GONE);
@@ -2702,7 +2993,7 @@ public class WinlatorProSuite {
         LinearLayout rowTools = new LinearLayout(activity);
         rowTools.setOrientation(LinearLayout.HORIZONTAL);
 
-        final Button btnToggleDrag = createStyledButton(activity, "✏️ Сдвиг: ВЫКЛ", 0xFF0284C7, 0xFF38BDF8);
+        final Button btnToggleDrag = createStyledButton(activity, "Сдвиг: выкл", UI_BTN_BG, UI_BTN_STROKE);
         btnToggleDrag.setOnClickListener(v -> {
             if (inputControlsView.getProfile() == null && !profiles.isEmpty()) {
                 inputControlsView.setProfile(profiles.get(0));
@@ -2710,15 +3001,15 @@ public class WinlatorProSuite {
             inputControlsView.setVisibility(View.VISIBLE);
             boolean nextEdit = !inputControlsView.isEditMode();
             inputControlsView.setEditMode(nextEdit);
-            btnToggleDrag.setText(nextEdit ? "✏️ Сдвиг: ВКЛ" : "✏️ Сдвиг: ВЫКЛ");
-            btnToggleDrag.setBackground(roundedBg(nextEdit ? 0xFFDC2626 : 0xFF0284C7, 0xFFF87171, 1, 8, activity));
+            btnToggleDrag.setText(nextEdit ? "Сдвиг: вкл" : "Сдвиг: выкл");
+            btnToggleDrag.setBackground(roundedBg(nextEdit ? UI_BTN_ACTIVE_BG : UI_BTN_BG, nextEdit ? UI_ACCENT : UI_BTN_STROKE, 1, 8, activity));
             inputControlsView.invalidate();
         });
         rowTools.addView(btnToggleDrag, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT) {{
             rightMargin = dp(activity, 5);
         }});
 
-        Button btnBigger = createStyledButton(activity, "➕ Размер", 0xFF059669, 0xFF34D399);
+        Button btnBigger = createStyledButton(activity, "Размер +", UI_BTN_BG, UI_BTN_STROKE);
         btnBigger.setOnClickListener(v -> {
             ControlElement el = inputControlsView.getSelectedElement();
             if (el != null) {
@@ -2726,14 +3017,14 @@ public class WinlatorProSuite {
                 if (inputControlsView.getProfile() != null) inputControlsView.getProfile().save();
                 inputControlsView.invalidate();
             } else {
-                AppUtils.showToast(activity, "Включите «✏️ Сдвиг» и нажмите на кнопку/стик!");
+                AppUtils.showToast(activity, "Включите «Сдвиг» и нажмите на кнопку/стик");
             }
         });
         rowTools.addView(btnBigger, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT) {{
             rightMargin = dp(activity, 5);
         }});
 
-        Button btnSmaller = createStyledButton(activity, "➖ Размер", 0xFF059669, 0xFF34D399);
+        Button btnSmaller = createStyledButton(activity, "Размер −", UI_BTN_BG, UI_BTN_STROKE);
         btnSmaller.setOnClickListener(v -> {
             ControlElement el = inputControlsView.getSelectedElement();
             if (el != null) {
@@ -2746,7 +3037,7 @@ public class WinlatorProSuite {
             rightMargin = dp(activity, 5);
         }});
 
-        Button btnSwapType = createStyledButton(activity, "🔄 Тип", 0xFF7C3AED, 0xFFA78BFA);
+        Button btnSwapType = createStyledButton(activity, "Тип", UI_BTN_BG, UI_BTN_STROKE);
         btnSwapType.setOnClickListener(v -> {
             final ControlElement el = inputControlsView.getSelectedElement();
             if (el == null) return;
@@ -2779,7 +3070,7 @@ public class WinlatorProSuite {
             rightMargin = dp(activity, 5);
         }});
 
-        Button btnRebindKey = createStyledButton(activity, "⌨️ Клавиша", 0xFFD97706, 0xFFFBBF24);
+        Button btnRebindKey = createStyledButton(activity, "Клавиша", UI_BTN_BG, UI_BTN_STROKE);
         btnRebindKey.setOnClickListener(v -> {
             final ControlElement el = inputControlsView.getSelectedElement();
             if (el == null) return;
@@ -2801,7 +3092,7 @@ public class WinlatorProSuite {
             rightMargin = dp(activity, 5);
         }});
 
-        Button btnAddEl = createStyledButton(activity, "➕ Добавить", 0xFF0284C7, 0xFF38BDF8);
+        Button btnAddEl = createStyledButton(activity, "Добавить", UI_BTN_BG, UI_BTN_STROKE);
         btnAddEl.setOnClickListener(v -> {
             if (inputControlsView.getProfile() == null && !profiles.isEmpty()) {
                 inputControlsView.setProfile(profiles.get(0));
@@ -2814,7 +3105,7 @@ public class WinlatorProSuite {
             rightMargin = dp(activity, 5);
         }});
 
-        Button btnDelEl = createStyledButton(activity, "🗑️", 0xFFDC2626, 0xFFF87171);
+        Button btnDelEl = createStyledButton(activity, "Удалить", UI_BTN_BG, UI_BTN_STROKE);
         btnDelEl.setOnClickListener(v -> {
             inputControlsView.removeElement();
             inputControlsView.invalidate();
@@ -2823,7 +3114,7 @@ public class WinlatorProSuite {
             rightMargin = dp(activity, 5);
         }});
 
-        Button btnOpacity = createStyledButton(activity, "👁️ Прозр.", 0xFF334155, 0xFF64748B);
+        Button btnOpacity = createStyledButton(activity, "Прозр.", UI_BTN_BG, UI_BTN_STROKE);
         btnOpacity.setOnClickListener(v -> {
             float cur = inputControlsView.getOverlayOpacity();
             float next = (cur >= 0.85f) ? 0.25f : (cur + 0.2f);
@@ -2846,9 +3137,11 @@ public class WinlatorProSuite {
     private static void startLiveProcessAndFreezeWatchdog(
         final XServerDisplayActivity activity,
         final TextView tvWatchdog,
-        final String targetExeName
+        final String targetExeName,
+        final Container container
     ) {
         stopWatchdog();
+        unityCrashShown = false;
         final Handler handler = new Handler(Looper.getMainLooper());
         activeWatchdogHandler = handler;
 
@@ -2861,16 +3154,22 @@ public class WinlatorProSuite {
                 Executors.newSingleThreadExecutor().execute(() -> {
                     if (activeWatchdogHandler != handler || activity.isFinishing() || activity.isDestroyed()) return;
                     int mappedWindows = 0;
+                    final boolean[] crashSeen = {false, false}; // [0] окно сбоя найдено, [1] сканирование прошло
                     try {
                         XServer xs = activity.getXServer();
                         if (xs != null && xs.windowManager != null && xs.windowManager.rootWindow != null) {
                             XLock lock = xs.tryLock(5, XServer.Lockable.WINDOW_MANAGER);
                             if (lock != null) {
                                 try (XLock ignored = lock) {
+                                    crashSeen[1] = true;
                                     for (Window w : xs.windowManager.rootWindow.getChildren()) {
-                                        if (w != null && w.attributes.isMapped() && w.getWidth() > 32) {
-                                            mappedWindows++;
-                                        }
+                                        if (w == null) continue;
+                                        if (w.attributes.isMapped() && w.getWidth() > 32) mappedWindows++;
+                                        // v12.6: окно UnityCrashHandler = игра Unity упала
+                                        String cls = w.getClassName();
+                                        String nm = w.getName();
+                                        String probe = ((cls != null ? cls : "") + " " + (nm != null ? nm : "")).toLowerCase(Locale.ROOT);
+                                        if (probe.contains("unitycrashhandler")) crashSeen[0] = true;
                                     }
                                 }
                             }
@@ -2882,8 +3181,14 @@ public class WinlatorProSuite {
                     final long ramMb = mem.freeRamBytes / (1024L * 1024L);
                     handler.post(() -> {
                         if (activeWatchdogHandler != handler || activity.isFinishing() || activity.isDestroyed()) return;
-                        tvWatchdog.setText("✥ 🛠️ " + targetExeName + " • ОЗУ " + ramMb + "МБ (Окон:" + finalWindows + ")");
-                        tvWatchdog.setTextColor(0xFF34D399);
+                        tvWatchdog.setText("⠿  " + targetExeName + " · " + String.format(Locale.US, "%.1f", ramMb / 1024f) + " ГБ своб.");
+                        tvWatchdog.setTextColor(UI_TEXT_DIM);
+                        if (crashSeen[0] && !unityCrashShown) {
+                            unityCrashShown = true;
+                            handleUnityCrash(activity, container);
+                        } else if (!crashSeen[0] && crashSeen[1] && unityCrashShown) {
+                            unityCrashShown = false;
+                        }
                     });
                 });
 

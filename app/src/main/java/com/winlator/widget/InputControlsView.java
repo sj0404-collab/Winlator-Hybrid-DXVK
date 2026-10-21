@@ -396,7 +396,9 @@ public class InputControlsView extends View {
             int pointerId = event.getPointerId(actionIndex);
             int actionMasked = event.getActionMasked();
             boolean handled = false;
-            boolean dedicatedTrackpadActive = showTouchscreenControls && profile.hasTrackpad() && (touchpadView == null || !touchpadView.isMoveCursorToTouchpoint());
+            // v12.6: в геймпадных профилях касания мимо кнопок НЕ превращаются в мышь (иначе игры Unity
+            // переключаются «Клавиатура ⇄ Контроллер» при каждом касании)
+            boolean dedicatedTrackpadActive = showTouchscreenControls && (profile.isVirtualGamepad() || (profile.hasTrackpad() && (touchpadView == null || !touchpadView.isMoveCursorToTouchpoint())));
 
             switch (actionMasked) {
                 case MotionEvent.ACTION_DOWN:
@@ -412,6 +414,7 @@ public class InputControlsView extends View {
                     break;
                 }
                 case MotionEvent.ACTION_MOVE: {
+                    boolean anyUnhandledMove = false;
                     for (byte i = 0, count = (byte)event.getPointerCount(); i < count; i++) {
                         float x = event.getX(i);
                         float y = event.getY(i);
@@ -421,8 +424,10 @@ public class InputControlsView extends View {
                         for (ControlElement element : profile.getElements()) {
                             if (element.handleTouchMove(movePointerId, x, y)) handled = true;
                         }
-                        if (!handled && !dedicatedTrackpadActive) touchpadView.onTouchEvent(event);
+                        if (!handled) anyUnhandledMove = true;
                     }
+                    // v12.6: передаём событие в тачпад один раз, а не по разу на каждый палец
+                    if (anyUnhandledMove && !dedicatedTrackpadActive) touchpadView.onTouchEvent(event);
                     break;
                 }
                 case MotionEvent.ACTION_UP:

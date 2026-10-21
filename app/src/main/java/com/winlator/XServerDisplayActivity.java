@@ -719,6 +719,8 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
             rootView.addView(frameRating);
         }
 
+        // v12.6: обновляем пресеты ДО первого чтения профилей (иначе в первой сессии грузился старый пресет 5)
+        WinlatorProSuite.ensureRichControlPresetsInstalled(this);
         ControlsProfile activeProfile = null;
         if (shortcut != null) {
             String controlsProfile = shortcut.getExtra("controlsProfile");
@@ -728,7 +730,9 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
                 } catch (NumberFormatException ignored) {}
             }
         }
-        if (activeProfile == null && preferences.getBoolean("auto_show_touch_controls", true)) {
+        // v12.6: на голом Рабочем столе Windows (без игры/ярлыка) геймпад не показываем — включается кнопкой «Геймпад» в HUD
+        boolean desktopOnlySession = shortcut == null && !getIntent().hasExtra("exec_path");
+        if (activeProfile == null && !desktopOnlySession && preferences.getBoolean("auto_show_touch_controls", true)) {
             int savedProfileId = preferences.getInt("default_touch_controls_profile_id", 5);
             activeProfile = inputControlsManager.getProfile(savedProfileId);
             if (activeProfile == null) activeProfile = inputControlsManager.getProfile(5);
@@ -813,7 +817,7 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
         dialog.show();
     }
 
-    private void showInputControls(ControlsProfile profile) {
+    public void showInputControls(ControlsProfile profile) {
         inputControlsView.setVisibility(View.VISIBLE);
         inputControlsView.requestFocus();
         inputControlsView.setProfile(profile);
@@ -829,7 +833,7 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
         inputControlsView.invalidate();
     }
 
-    private void hideInputControls() {
+    public void hideInputControls() {
         inputControlsView.setShowTouchscreenControls(true);
         inputControlsView.setVisibility(View.GONE);
         inputControlsView.setProfile(null);

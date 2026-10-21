@@ -1,1 +1,215 @@
-{"id":5,"name":"Universal Gamepad + Touchpad + Mouse","cursorSpeed":1.15,"elements":[{"type":"D_PAD","shape":"CIRCLE","bindings":["KEY_UP","KEY_RIGHT","KEY_DOWN","KEY_LEFT"],"scale":0.85,"x":0.15,"y":0.46,"toggleSwitch":false,"text":"","iconId":0},{"type":"STICK","shape":"CIRCLE","bindings":["GAMEPAD_LEFT_THUMB_UP","GAMEPAD_LEFT_THUMB_RIGHT","GAMEPAD_LEFT_THUMB_DOWN","GAMEPAD_LEFT_THUMB_LEFT"],"scale":1.0,"x":0.13,"y":0.78,"toggleSwitch":false,"text":"","iconId":0},{"type":"TRACKPAD","shape":"ROUND_RECT","bindings":["MOUSE_MOVE_UP","MOUSE_MOVE_RIGHT","MOUSE_MOVE_DOWN","MOUSE_MOVE_LEFT"],"scale":1.0,"x":0.78,"y":0.28,"toggleSwitch":false,"text":"ТАЧПАД","iconId":0},{"type":"BUTTON","shape":"ROUND_RECT","bindings":["MOUSE_LEFT_BUTTON","NONE","NONE","NONE"],"scale":0.9,"x":0.67,"y":0.5,"toggleSwitch":false,"text":"ЛКМ","iconId":0},{"type":"BUTTON","shape":"ROUND_RECT","bindings":["MOUSE_SCROLL_UP","NONE","NONE","NONE"],"scale":0.7,"x":0.78,"y":0.43,"toggleSwitch":false,"text":"▲","iconId":0},{"type":"BUTTON","shape":"ROUND_RECT","bindings":["MOUSE_MIDDLE_BUTTON","NONE","NONE","NONE"],"scale":0.72,"x":0.78,"y":0.5,"toggleSwitch":false,"text":"СКМ","iconId":0},{"type":"BUTTON","shape":"ROUND_RECT","bindings":["MOUSE_SCROLL_DOWN","NONE","NONE","NONE"],"scale":0.7,"x":0.78,"y":0.57,"toggleSwitch":false,"text":"▼","iconId":0},{"type":"BUTTON","shape":"ROUND_RECT","bindings":["MOUSE_RIGHT_BUTTON","NONE","NONE","NONE"],"scale":0.9,"x":0.89,"y":0.5,"toggleSwitch":false,"text":"ПКМ","iconId":0},{"type":"BUTTON","shape":"CIRCLE","bindings":["GAMEPAD_BUTTON_Y","KEY_E","KEY_SHIFT_L","NONE"],"scale":0.95,"x":0.83,"y":0.69,"toggleSwitch":false,"text":"Y","iconId":0},{"type":"BUTTON","shape":"CIRCLE","bindings":["GAMEPAD_BUTTON_X","KEY_SPACE","KEY_C","NONE"],"scale":0.95,"x":0.76,"y":0.79,"toggleSwitch":false,"text":"X","iconId":0},{"type":"BUTTON","shape":"CIRCLE","bindings":["GAMEPAD_BUTTON_B","KEY_ESC","KEY_X","NONE"],"scale":0.95,"x":0.9,"y":0.79,"toggleSwitch":false,"text":"B/ESC","iconId":0},{"type":"BUTTON","shape":"CIRCLE","bindings":["GAMEPAD_BUTTON_A","KEY_ENTER","KEY_Z","NONE"],"scale":0.95,"x":0.83,"y":0.89,"toggleSwitch":false,"text":"A/OK","iconId":0},{"type":"BUTTON","shape":"RECT","bindings":["GAMEPAD_BUTTON_R2","NONE","NONE","NONE"],"scale":0.95,"x":0.93,"y":0.14,"toggleSwitch":false,"text":"R2","iconId":0},{"type":"BUTTON","shape":"RECT","bindings":["GAMEPAD_BUTTON_R1","NONE","NONE","NONE"],"scale":0.95,"x":0.93,"y":0.25,"toggleSwitch":false,"text":"R1","iconId":0},{"type":"BUTTON","shape":"RECT","bindings":["GAMEPAD_BUTTON_L1","NONE","NONE","NONE"],"scale":0.95,"x":0.08,"y":0.27,"toggleSwitch":false,"text":"L1","iconId":0},{"type":"BUTTON","shape":"RECT","bindings":["GAMEPAD_BUTTON_L2","NONE","NONE","NONE"],"scale":0.95,"x":0.08,"y":0.16,"toggleSwitch":false,"text":"L2","iconId":0},{"type":"BUTTON","shape":"ROUND_RECT","bindings":["GAMEPAD_BUTTON_START","KEY_ENTER","NONE","NONE"],"scale":0.85,"x":0.54,"y":0.91,"toggleSwitch":false,"text":"","iconId":15},{"type":"BUTTON","shape":"ROUND_RECT","bindings":["GAMEPAD_BUTTON_SELECT","KEY_TAB","NONE","NONE"],"scale":0.85,"x":0.45,"y":0.91,"toggleSwitch":false,"text":"","iconId":16}]}
+{
+ "id": 5,
+ "name": "Геймпад Xbox (для игр)",
+ "cursorSpeed": 1.0,
+ "elements": [
+  {
+   "type": "D_PAD",
+   "shape": "CIRCLE",
+   "bindings": [
+    "GAMEPAD_DPAD_UP",
+    "GAMEPAD_DPAD_RIGHT",
+    "GAMEPAD_DPAD_DOWN",
+    "GAMEPAD_DPAD_LEFT"
+   ],
+   "scale": 0.85,
+   "x": 0.15,
+   "y": 0.46,
+   "toggleSwitch": false,
+   "text": "",
+   "iconId": 0
+  },
+  {
+   "type": "STICK",
+   "shape": "CIRCLE",
+   "bindings": [
+    "GAMEPAD_LEFT_THUMB_UP",
+    "GAMEPAD_LEFT_THUMB_RIGHT",
+    "GAMEPAD_LEFT_THUMB_DOWN",
+    "GAMEPAD_LEFT_THUMB_LEFT"
+   ],
+   "scale": 1.0,
+   "x": 0.13,
+   "y": 0.78,
+   "toggleSwitch": false,
+   "text": "",
+   "iconId": 0
+  },
+  {
+   "type": "STICK",
+   "shape": "CIRCLE",
+   "bindings": [
+    "GAMEPAD_RIGHT_THUMB_UP",
+    "GAMEPAD_RIGHT_THUMB_RIGHT",
+    "GAMEPAD_RIGHT_THUMB_DOWN",
+    "GAMEPAD_RIGHT_THUMB_LEFT"
+   ],
+   "scale": 0.75,
+   "x": 0.62,
+   "y": 0.84,
+   "toggleSwitch": false,
+   "text": "",
+   "iconId": 0
+  },
+  {
+   "type": "BUTTON",
+   "shape": "CIRCLE",
+   "bindings": [
+    "GAMEPAD_BUTTON_Y",
+    "NONE",
+    "NONE",
+    "NONE"
+   ],
+   "scale": 0.95,
+   "x": 0.83,
+   "y": 0.62,
+   "toggleSwitch": false,
+   "text": "Y",
+   "iconId": 0
+  },
+  {
+   "type": "BUTTON",
+   "shape": "CIRCLE",
+   "bindings": [
+    "GAMEPAD_BUTTON_X",
+    "NONE",
+    "NONE",
+    "NONE"
+   ],
+   "scale": 0.95,
+   "x": 0.76,
+   "y": 0.74,
+   "toggleSwitch": false,
+   "text": "X",
+   "iconId": 0
+  },
+  {
+   "type": "BUTTON",
+   "shape": "CIRCLE",
+   "bindings": [
+    "GAMEPAD_BUTTON_B",
+    "NONE",
+    "NONE",
+    "NONE"
+   ],
+   "scale": 0.95,
+   "x": 0.9,
+   "y": 0.74,
+   "toggleSwitch": false,
+   "text": "B",
+   "iconId": 0
+  },
+  {
+   "type": "BUTTON",
+   "shape": "CIRCLE",
+   "bindings": [
+    "GAMEPAD_BUTTON_A",
+    "NONE",
+    "NONE",
+    "NONE"
+   ],
+   "scale": 0.95,
+   "x": 0.83,
+   "y": 0.86,
+   "toggleSwitch": false,
+   "text": "A",
+   "iconId": 0
+  },
+  {
+   "type": "BUTTON",
+   "shape": "RECT",
+   "bindings": [
+    "GAMEPAD_BUTTON_L2",
+    "NONE",
+    "NONE",
+    "NONE"
+   ],
+   "scale": 0.95,
+   "x": 0.08,
+   "y": 0.15,
+   "toggleSwitch": false,
+   "text": "L2",
+   "iconId": 0
+  },
+  {
+   "type": "BUTTON",
+   "shape": "RECT",
+   "bindings": [
+    "GAMEPAD_BUTTON_L1",
+    "NONE",
+    "NONE",
+    "NONE"
+   ],
+   "scale": 0.95,
+   "x": 0.08,
+   "y": 0.27,
+   "toggleSwitch": false,
+   "text": "L1",
+   "iconId": 0
+  },
+  {
+   "type": "BUTTON",
+   "shape": "RECT",
+   "bindings": [
+    "GAMEPAD_BUTTON_R2",
+    "NONE",
+    "NONE",
+    "NONE"
+   ],
+   "scale": 0.95,
+   "x": 0.92,
+   "y": 0.15,
+   "toggleSwitch": false,
+   "text": "R2",
+   "iconId": 0
+  },
+  {
+   "type": "BUTTON",
+   "shape": "RECT",
+   "bindings": [
+    "GAMEPAD_BUTTON_R1",
+    "NONE",
+    "NONE",
+    "NONE"
+   ],
+   "scale": 0.95,
+   "x": 0.92,
+   "y": 0.27,
+   "toggleSwitch": false,
+   "text": "R1",
+   "iconId": 0
+  },
+  {
+   "type": "BUTTON",
+   "shape": "ROUND_RECT",
+   "bindings": [
+    "GAMEPAD_BUTTON_SELECT",
+    "NONE",
+    "NONE",
+    "NONE"
+   ],
+   "scale": 0.85,
+   "x": 0.45,
+   "y": 0.91,
+   "toggleSwitch": false,
+   "text": "",
+   "iconId": 16
+  },
+  {
+   "type": "BUTTON",
+   "shape": "ROUND_RECT",
+   "bindings": [
+    "GAMEPAD_BUTTON_START",
+    "NONE",
+    "NONE",
+    "NONE"
+   ],
+   "scale": 0.85,
+   "x": 0.55,
+   "y": 0.91,
+   "toggleSwitch": false,
+   "text": "",
+   "iconId": 15
+  }
+ ]
+}
