@@ -68,6 +68,18 @@ public class InputControlsManager {
         if (files == null) return;
 
         try {
+            for (File f : files) {
+                ControlsProfile tp = loadProfile(context, f);
+                if (tp != null && tp.getName() != null) {
+                    String n = tp.getName();
+                    if (n.contains("Шутеры FPS Pro") || n.contains("RPG и Герои") || n.contains("Гонки и Аркады")) {
+                        f.delete();
+                    }
+                }
+            }
+            files = profilesDir.listFiles();
+            if (files == null) files = new File[0];
+
             AssetManager assetManager = context.getAssets();
             String[] assetFiles = assetManager.list("inputcontrols/profiles");
             for (String assetFile : assetFiles) {
@@ -77,7 +89,7 @@ public class InputControlsManager {
                 File targetFile = null;
                 for (File file : files) {
                     ControlsProfile targetProfile = loadProfile(context, file);
-                    if (originProfile.id == targetProfile.id && originProfile.getName().equals(targetProfile.getName())) {
+                    if (originProfile != null && targetProfile != null && originProfile.id == targetProfile.id) {
                         targetFile = file;
                         break;
                     }
@@ -88,9 +100,7 @@ public class InputControlsManager {
                 }
                 else {
                     File newTargetFile = new File(profilesDir, assetFile);
-                    if (!newTargetFile.isFile()) {
-                        FileUtils.copy(context, assetPath, newTargetFile);
-                    }
+                    FileUtils.copy(context, assetPath, newTargetFile);
                 }
             }
         }

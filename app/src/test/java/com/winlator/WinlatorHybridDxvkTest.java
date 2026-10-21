@@ -184,4 +184,68 @@ public class WinlatorHybridDxvkTest {
         assertTrue("new widescreen wallpaper must exist and be > 100 KB", widescreenWallpaper.isFile() && widescreenWallpaper.length() > 100_000L);
         assertEquals("DARK,IMAGE,#0f172a,wallpaper-1", com.winlator.core.WineThemeManager.DEFAULT_DESKTOP_THEME);
     }
+
+    @Test
+    public void testTouchpadMouseButtonsOrderAndWinhandlerPatch() throws Exception {
+        File assetsDir = new File("src/main/assets");
+        if (!assetsDir.isDirectory()) {
+            assetsDir = new File("app/src/main/assets");
+        }
+        File c5 = new File(assetsDir, "inputcontrols/profiles/controls-5.icp");
+        File c6 = new File(assetsDir, "inputcontrols/profiles/controls-6.icp");
+        assertTrue("controls-5.icp must exist", c5.isFile());
+        assertTrue("controls-6.icp must exist", c6.isFile());
+
+        String s5 = com.winlator.core.FileUtils.readString(c5);
+        assertNotNull(s5);
+        assertTrue(s5.contains("\"TRACKPAD\""));
+        assertTrue(s5.contains("\"ТАЧПАД\""));
+        assertTrue(s5.contains("\"MOUSE_LEFT_BUTTON\""));
+        assertTrue(s5.contains("\"MOUSE_MIDDLE_BUTTON\""));
+        assertTrue(s5.contains("\"MOUSE_RIGHT_BUTTON\""));
+        assertTrue(s5.contains("\"MOUSE_SCROLL_UP\""));
+        assertTrue(s5.contains("\"MOUSE_SCROLL_DOWN\""));
+
+        // Verify proper anatomical order: Left (ЛКМ) < Middle (▲/СКМ/▼) < Right (ПКМ)
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile(
+            "\\{[^}]*\"x\"\\s*:\\s*([0-9.]+)\\s*,\\s*\"y\"\\s*:\\s*([0-9.]+)[^}]*\"text\"\\s*:\\s*\"([^\"]+)\"[^}]*\\}"
+        ).matcher(s5);
+        double xLmb = -1, xMmb = -1, xRmb = -1, yUp = -1, yMid = -1, yDown = -1;
+        while (m.find()) {
+            double x = Double.parseDouble(m.group(1));
+            double y = Double.parseDouble(m.group(2));
+            String txt = m.group(3);
+            if ("ЛКМ".equals(txt)) xLmb = x;
+            else if ("СКМ".equals(txt)) { xMmb = x; yMid = y; }
+            else if ("ПКМ".equals(txt)) xRmb = x;
+            else if ("▲".equals(txt)) yUp = y;
+            else if ("▼".equals(txt)) yDown = y;
+        }
+        assertTrue("LMB must be to the left of MMB", xLmb > 0 && xLmb < xMmb);
+        assertTrue("MMB must be to the left of RMB", xMmb < xRmb);
+        assertTrue("Scroll Up must be above MMB", yUp > 0 && yUp < yMid);
+        assertTrue("MMB must be above Scroll Down", yMid < yDown);
+
+        // Verify WinHandler binary patcher replaces 0F 84 C1 00 00 00 with 90 90 90 90 90 90
+        File tmpRoot = new File(System.getProperty("java.io.tmpdir"), "winlator_patch_test");
+        File winDir = new File(tmpRoot, "home/xuser/.wine/drive_c/windows");
+        winDir.mkdirs();
+        File fakeExe = new File(winDir, "winhandler.exe");
+        byte[] dummy = new byte[2048];
+        byte[] sig = new byte[]{
+            (byte) 0x80, (byte) 0x7D, (byte) 0xC0, (byte) 0x02,
+            (byte) 0x0F, (byte) 0x84, (byte) 0xC1, (byte) 0x00, (byte) 0x00, (byte) 0x00
+        };
+        System.arraycopy(sig, 0, dummy, 512, sig.length);
+        try (java.io.FileOutputStream fos = new java.io.FileOutputStream(fakeExe)) {
+            fos.write(dummy);
+        }
+        WinlatorProSuite.patchWinHandlerBinaryToStayAlive(tmpRoot, null);
+        byte[] patched = com.winlator.core.FileUtils.read(fakeExe);
+        assertEquals((byte) 0x80, patched[512]);
+        assertEquals((byte) 0x02, patched[515]);
+        for (int k = 4; k < 10; k++) {
+            assertEquals((byte) 0x90, patched[512 + k]);
+        }
+    }
 }

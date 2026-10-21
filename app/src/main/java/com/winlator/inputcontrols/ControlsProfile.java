@@ -181,6 +181,13 @@ public class ControlsProfile implements Comparable<ControlsProfile>, GamepadSlot
         return immutableElements;
     }
 
+    public boolean hasTrackpad() {
+        for (ControlElement element : elements) {
+            if (element.getType() == ControlElement.Type.TRACKPAD) return true;
+        }
+        return false;
+    }
+
     public boolean isTemplate() {
         return name.toLowerCase(Locale.ENGLISH).contains("template");
     }
@@ -237,12 +244,16 @@ public class ControlsProfile implements Comparable<ControlsProfile>, GamepadSlot
 
                 ControlElement element = null;
                 if (inputControlsView != null) {
+                    double rawX = elementJSONObject.getDouble("x");
+                    double rawY = elementJSONObject.getDouble("y");
+                    double safeX = Math.max(0.04, Math.min(0.96, rawX));
+                    double safeY = Math.max(0.04, Math.min(0.96, rawY));
                     element = new ControlElement(inputControlsView);
                     element.setType(ControlElement.Type.valueOf(elementJSONObject.getString("type")));
                     element.setShape(ControlElement.Shape.valueOf(elementJSONObject.getString("shape")));
                     element.setToggleSwitch(elementJSONObject.getBoolean("toggleSwitch"));
-                    element.setX((int)(elementJSONObject.getDouble("x") * inputControlsView.getMaxWidth()));
-                    element.setY((int)(elementJSONObject.getDouble("y") * inputControlsView.getMaxHeight()));
+                    element.setX((int)(safeX * inputControlsView.getMaxWidth()));
+                    element.setY((int)(safeY * inputControlsView.getMaxHeight()));
                     element.setScale((float)elementJSONObject.getDouble("scale"));
                     element.setText(elementJSONObject.getString("text"));
                     element.setIconId(elementJSONObject.getInt("iconId"));

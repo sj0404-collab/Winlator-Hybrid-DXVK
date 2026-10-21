@@ -18,7 +18,12 @@ import com.winlator.xserver.extensions.XInputExtension;
 
 import java.nio.charset.Charset;
 import java.util.EnumMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReentrantLock;
+
+import android.os.Looper;
 
 public class XServer {
     public enum Lockable {WINDOW_MANAGER, PIXMAP_MANAGER, DRAWABLE_MANAGER, GRAPHIC_CONTEXT_MANAGER, INPUT_DEVICE, CURSOR_MANAGER, SHMSEGMENT_MANAGER}
@@ -45,6 +50,7 @@ public class XServer {
     private GLRenderer renderer;
     private WinHandler winHandler;
     private final EnumMap<Lockable, ReentrantLock> locks = new EnumMap<>(Lockable.class);
+    private final ExecutorService inputExecutor = Executors.newSingleThreadExecutor();
     private boolean relativeMouseMovement = false;
 
     public XServer(XServerDisplayActivity activity, ScreenInfo screenInfo) {
@@ -136,6 +142,55 @@ public class XServer {
         return new MultiXLock(lockables);
     }
 
+    public XLock tryLock(long timeoutMs, final Lockable... lockables) {
+        final int count = lockables.length;
+        int acquired = 0;
+        try {
+            for (int i = 0; i < count; i++) {
+                ReentrantLock l = locks.get(lockables[i]);
+                if (l != null && l.tryLock(timeoutMs, TimeUnit.MILLISECONDS)) {
+                    acquired++;
+                } else {
+                    for (int j = acquired - 1; j >= 0; j--) {
+                        locks.get(lockables[j]).unlock();
+                    }
+                    return null;
+                }
+            }
+            return () -> {
+                for (int j = count - 1; j >= 0; j--) {
+                    locks.get(lockables[j]).unlock();
+                }
+            };
+        } catch (InterruptedException e) {
+            for (int j = acquired - 1; j >= 0; j--) {
+                locks.get(lockables[j]).unlock();
+            }
+            return null;
+        }
+    }
+
+    private void runInputActionSafely(final Runnable action) {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            XLock fastLock = tryLock(2, Lockable.WINDOW_MANAGER, Lockable.INPUT_DEVICE);
+            if (fastLock != null) {
+                try (XLock ignored = fastLock) {
+                    action.run();
+                }
+            } else {
+                inputExecutor.execute(() -> {
+                    try (XLock lock = lock(Lockable.WINDOW_MANAGER, Lockable.INPUT_DEVICE)) {
+                        action.run();
+                    } catch (Throwable ignored) {}
+                });
+            }
+        } else {
+            try (XLock lock = lock(Lockable.WINDOW_MANAGER, Lockable.INPUT_DEVICE)) {
+                action.run();
+            }
+        }
+    }
+
     public XLock lockAll() {
         return new MultiXLock(Lockable.values());
     }
@@ -146,37 +201,35 @@ public class XServer {
     }
 
     public void injectPointerMove(int x, int y) {
-        try (XLock lock = lock(Lockable.WINDOW_MANAGER, Lockable.INPUT_DEVICE)) {
-            pointer.setPosition(x, y);
-        }
+        runInputActionSafely(() -> pointer.setPosition(x, y));
     }
 
     public void injectPointerMoveDelta(int dx, int dy) {
-        try (XLock lock = lock(Lockable.WINDOW_MANAGER, Lockable.INPUT_DEVICE)) {
+        runInputActionSafely(() -> {
             pointer.setPosition(pointer.getX() + dx, pointer.getY() + dy);
             if (cursorLocker == null) pointer.clampPosition();
 
             XInputExtension xInputExtension = getExtension(XInputExtension.class);
             if (xInputExtension != null) xInputExtension.sendRawMotion(dx, dy);
-        }
+        });
     }
 
     public void injectPointerButtonPress(Pointer.Button buttonCode) {
-        try (XLock lock = lock(Lockable.WINDOW_MANAGER, Lockable.INPUT_DEVICE)) {
+        runInputActionSafely(() -> {
             pointer.setButton(buttonCode, true);
 
             XInputExtension xInputExtension = getExtension(XInputExtension.class);
             if (xInputExtension != null) xInputExtension.sendRawButtonState(buttonCode.code(), true);
-        }
+        });
     }
 
     public void injectPointerButtonRelease(Pointer.Button buttonCode) {
-        try (XLock lock = lock(Lockable.WINDOW_MANAGER, Lockable.INPUT_DEVICE)) {
+        runInputActionSafely(() -> {
             pointer.setButton(buttonCode, false);
 
             XInputExtension xInputExtension = getExtension(XInputExtension.class);
             if (xInputExtension != null) xInputExtension.sendRawButtonState(buttonCode.code(), false);
-        }
+        });
     }
 
     public void injectKeyPress(XKeycode xKeycode) {
@@ -184,15 +237,11 @@ public class XServer {
     }
 
     public void injectKeyPress(XKeycode xKeycode, int keysym) {
-        try (XLock lock = lock(Lockable.WINDOW_MANAGER, Lockable.INPUT_DEVICE)) {
-            keyboard.setKeyPress(xKeycode.id, keysym);
-        }
+        runInputActionSafely(() -> keyboard.setKeyPress(xKeycode.id, keysym));
     }
 
     public void injectKeyRelease(XKeycode xKeycode) {
-        try (XLock lock = lock(Lockable.WINDOW_MANAGER, Lockable.INPUT_DEVICE)) {
-            keyboard.setKeyRelease(xKeycode.id);
-        }
+        runInputActionSafely(() -> keyboard.setKeyRelease(xKeycode.id));
     }
 
     private Extension[] setupExtensions() {

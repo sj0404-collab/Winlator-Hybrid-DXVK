@@ -255,20 +255,25 @@ public abstract class MSLink {
 
             while (IDListSize > 2) {
                 short ItemIDSize = data.getShort();
+                if (ItemIDSize <= 2) break;
                 byte[] ItemData = new byte[ItemIDSize - 2];
                 data.get(ItemData);
 
-                if (ArrayUtils.startsWith(prefixOfDirectory, ItemData)) {
+                if (ArrayUtils.startsWith(prefixOfDirectory, ItemData) || (ItemData.length > 12 && (ItemData[0] == 0x31 || ItemData[0] == 0x35))) {
                     String filename = StringUtils.fromANSIString(Arrays.copyOfRange(ItemData, 12, ItemData.length));
-                    path += (!path.isEmpty() ? "\\" : "")+filename;
-                    isDirectory = true;
+                    if (!filename.isEmpty()) {
+                        path += (!path.isEmpty() ? "\\" : "")+filename;
+                        isDirectory = true;
+                    }
                 }
-                else if (ArrayUtils.startsWith(prefixOfArchive, ItemData)) {
+                else if (ArrayUtils.startsWith(prefixOfArchive, ItemData) || (ItemData.length > 12 && (ItemData[0] == 0x32 || ItemData[0] == 0x36))) {
                     String filename = StringUtils.fromANSIString(Arrays.copyOfRange(ItemData, 12, ItemData.length));
-                    path += (!path.isEmpty() ? "\\" : "")+filename;
-                    isDirectory = false;
+                    if (!filename.isEmpty()) {
+                        path += (!path.isEmpty() ? "\\" : "")+filename;
+                        isDirectory = false;
+                    }
                 }
-                else if (ItemData[0] == 0x2f || ItemData[0] == 0x23) {
+                else if (ItemData.length > 1 && (ItemData[0] == 0x2f || ItemData[0] == 0x23)) {
                     driveLetter = StringUtils.fromANSIString(Arrays.copyOfRange(ItemData, 1, ItemData.length));
                 }
 
@@ -291,22 +296,35 @@ public abstract class MSLink {
                 int CommonNetworkRelativeLinkOffset = data.getInt();
                 int CommonPathSuffixOffset = data.getInt();
 
-                if ((LinkInfoFlags & VolumeIDAndLocalBasePath) != 0) {
-                    data.position(data.position() + 17);
+                if ((LinkInfoFlags & VolumeIDAndLocalBasePath) != 0 && LocalBasePathOffset > 0 && oldPosition + LocalBasePathOffset < data.limit()) {
+                    data.position(oldPosition + LocalBasePathOffset);
                     String LocalBasePath = readNullTerminatedString(data);
-                    if (linkInfo == null) linkInfo = new LinkInfo();
-                    linkInfo.targetPath = LocalBasePath;
+                    String suffix = "";
+                    if (CommonPathSuffixOffset > 0 && oldPosition + CommonPathSuffixOffset < oldPosition + LinkInfoSize) {
+                        data.position(oldPosition + CommonPathSuffixOffset);
+                        suffix = readNullTerminatedString(data);
+                    }
+                    if (LocalBasePath != null && !LocalBasePath.isEmpty()) {
+                        if (linkInfo == null) linkInfo = new LinkInfo();
+                        if (suffix != null && !suffix.isEmpty()) {
+                            linkInfo.targetPath = LocalBasePath + (LocalBasePath.endsWith("\\") ? "" : "\\") + suffix;
+                        } else {
+                            linkInfo.targetPath = LocalBasePath;
+                        }
+                    }
                 }
-
-                data.get();
             }
-            else data.position(oldPosition + LinkInfoSize);
+            if (oldPosition + LinkInfoSize <= data.limit()) {
+                data.position(oldPosition + LinkInfoSize);
+            }
         }
 
-        if (driveLetter.matches("[A-Za-z]:\\\\?")) {
+        if (driveLetter.matches("[A-Za-z]:\\\\?") && !path.isEmpty()) {
             if (!driveLetter.endsWith("\\")) driveLetter += "\\";
             if (linkInfo == null) linkInfo = new LinkInfo();
-            linkInfo.targetPath = driveLetter+path;
+            if (linkInfo.targetPath == null || linkInfo.targetPath.isEmpty()) {
+                linkInfo.targetPath = driveLetter+path;
+            }
             linkInfo.isDirectory = isDirectory;
             linkInfo.iconIndex = IconIndex != 0 ? Math.abs(IconIndex) + 1 : -1;
         }

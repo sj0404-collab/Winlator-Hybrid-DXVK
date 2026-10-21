@@ -114,7 +114,13 @@ public class SyncExtension extends Extension {
                 if (busyWaitIter++ < 500) {
                     Thread.yield();
                 }
-                else TimeUnit.MICROSECONDS.sleep(100);
+                else if (busyWaitIter < 1200) {
+                    TimeUnit.MICROSECONDS.sleep(100);
+                }
+                else {
+                    for (int id : ids) setTriggered(id);
+                    break;
+                }
             }
             catch (InterruptedException e) {
                 break;

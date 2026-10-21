@@ -31,6 +31,7 @@ import com.winlator.xserver.Window;
 import com.winlator.xserver.XLock;
 import com.winlator.xserver.XServer;
 
+import java.io.File;
 import java.util.ArrayList;
 import java.util.Locale;
 import java.util.Timer;
@@ -41,6 +42,7 @@ public class TaskManagerDialog extends ContentDialog implements OnGetProcessInfo
     private final LayoutInflater inflater;
     private Timer timer;
     private final Object lock = new Object();
+    private volatile long lastUdpProcessTime = 0L;
     private BroadcastReceiver batteryReceiver;
     private final BatteryInfo batteryInfo = new BatteryInfo();
     private final Panel cpuPanel;
@@ -173,6 +175,10 @@ public class TaskManagerDialog extends ContentDialog implements OnGetProcessInfo
         synchronized (lock) {
             activity.getWinHandler().listProcesses();
 
+            if (System.currentTimeMillis() - lastUdpProcessTime > 1200L) {
+                scanLinuxWineProcessesFallback();
+            }
+
             final LinearLayout container = findViewById(R.id.LLProcessList);
             if (container.getChildCount() == 0) findViewById(R.id.TVEmptyText).setVisibility(View.VISIBLE);
         }
@@ -180,6 +186,78 @@ public class TaskManagerDialog extends ContentDialog implements OnGetProcessInfo
         updateCPUPanel();
         updateMemoryPanel();
         updateBatteryPanel();
+    }
+
+    private void scanLinuxWineProcessesFallback() {
+        try {
+            File procDir = new File("/proc");
+            File[] entries = procDir.listFiles();
+            if (entries == null) return;
+            ArrayList<ProcessInfo> fallbackList = new ArrayList<>();
+            int myUid = android.os.Process.myUid();
+            int myPid = android.os.Process.myPid();
+            int cpuMask = (1 << Runtime.getRuntime().availableProcessors()) - 1;
+
+            for (File entry : entries) {
+                String dName = entry.getName();
+                if (!dName.matches("\\d+")) continue;
+                int pid = Integer.parseInt(dName);
+                if (pid == myPid) continue;
+
+                File cmdFile = new File(entry, "cmdline");
+                if (!cmdFile.isFile()) continue;
+                byte[] raw = com.winlator.core.FileUtils.read(cmdFile);
+                if (raw == null || raw.length == 0) continue;
+
+                StringBuilder sb = new StringBuilder();
+                for (byte b : raw) {
+                    sb.append(b == 0 ? ' ' : (char) (b & 0xFF));
+                }
+                String cmdline = sb.toString().trim();
+                if (cmdline.isEmpty()) continue;
+                String lower = cmdline.toLowerCase(Locale.ROOT);
+                if (!lower.contains(".exe") && !lower.contains("wine") && !lower.contains("box64")) {
+                    continue;
+                }
+
+                String procName = cmdline;
+                String[] tokens = cmdline.split("\\s+");
+                for (int i = tokens.length - 1; i >= 0; i--) {
+                    String t = tokens[i].replace("\"", "").trim();
+                    if (t.toLowerCase(Locale.ROOT).endsWith(".exe")) {
+                        int slash = Math.max(t.lastIndexOf('/'), t.lastIndexOf('\\'));
+                        procName = slash >= 0 ? t.substring(slash + 1) : t;
+                        break;
+                    }
+                }
+                if (procName.equals(cmdline)) {
+                    String first = tokens[0].replace("\"", "").trim();
+                    int slash = Math.max(first.lastIndexOf('/'), first.lastIndexOf('\\'));
+                    procName = slash >= 0 ? first.substring(slash + 1) : first;
+                }
+
+                long rssBytes = 32L * 1024L * 1024L;
+                File statmFile = new File(entry, "statm");
+                if (statmFile.isFile()) {
+                    String statm = com.winlator.core.FileUtils.readString(statmFile);
+                    if (statm != null) {
+                        String[] parts = statm.trim().split("\\s+");
+                        if (parts.length >= 2) {
+                            try {
+                                rssBytes = Long.parseLong(parts[1]) * 4096L;
+                            } catch (NumberFormatException ignored) {}
+                        }
+                    }
+                }
+                fallbackList.add(new ProcessInfo(pid, procName, rssBytes, cpuMask, false));
+            }
+
+            if (!fallbackList.isEmpty()) {
+                for (int i = 0; i < fallbackList.size(); i++) {
+                    renderProcessRow(i, fallbackList.size(), fallbackList.get(i));
+                }
+            }
+        } catch (Throwable ignored) {}
     }
 
     private void showListItemMenu(final View anchorView, final ProcessInfo processInfo) {
@@ -200,7 +278,10 @@ public class TaskManagerDialog extends ContentDialog implements OnGetProcessInfo
                     break;
                 case R.id.menu_item_end_process:
                     ContentDialog.confirm(activity, R.string.do_you_want_to_end_this_process, () -> {
-                        winHandler.killProcess(null, processInfo.pid);
+                        winHandler.killProcess(processInfo.name, processInfo.pid);
+                        try {
+                            android.os.Process.killProcess(processInfo.pid);
+                        } catch (Throwable ignored) {}
                     });
                     break;
             }
@@ -240,47 +321,59 @@ public class TaskManagerDialog extends ContentDialog implements OnGetProcessInfo
 
     @Override
     public void onGetProcessInfo(int index, int numProcesses, ProcessInfo processInfo) {
+        if (numProcesses > 0 && processInfo != null) {
+            lastUdpProcessTime = System.currentTimeMillis();
+        }
         activity.runOnUiThread(() -> {
             synchronized (lock) {
-                final LinearLayout container = findViewById(R.id.LLProcessList);
-                setBottomBarText(activity.getString(R.string.processes)+": " + numProcesses);
-
                 if (numProcesses == 0) {
-                    container.removeAllViews();
-                    findViewById(R.id.TVEmptyText).setVisibility(View.VISIBLE);
+                    if (System.currentTimeMillis() - lastUdpProcessTime > 1200L) {
+                        scanLinuxWineProcessesFallback();
+                    }
                     return;
                 }
-
-                findViewById(R.id.TVEmptyText).setVisibility(View.GONE);
-
-                int childCount = container.getChildCount();
-                View itemView = index < childCount ? container.getChildAt(index) : inflater.inflate(R.layout.process_info_list_item, container, false);
-                ((TextView)itemView.findViewById(R.id.TVName)).setText(processInfo.name+(processInfo.wow64Process ? " *32" : ""));
-                ((TextView)itemView.findViewById(R.id.TVPID)).setText(String.valueOf(processInfo.pid));
-                ((TextView)itemView.findViewById(R.id.TVMemoryUsage)).setText(processInfo.getFormattedMemoryUsage());
-                itemView.findViewById(R.id.BTMenu).setOnClickListener((v) -> showListItemMenu(v, processInfo));
-
-                XServer xServer = activity.getXServer();
-                Window window;
-
-                try (XLock xlock = xServer.lock(XServer.Lockable.WINDOW_MANAGER)) {
-                    window = xServer.windowManager.findWindowWithProcessId(processInfo.pid);
-                }
-
-                ImageView ivIcon = itemView.findViewById(R.id.IVIcon);
-                ivIcon.setImageResource(R.drawable.taskmgr_process);
-                if (window != null) {
-                    Bitmap icon = xServer.pixmapManager.getWindowIcon(window);
-                    if (icon != null) ivIcon.setImageBitmap(icon);
-                }
-
-                if (index >= childCount) container.addView(itemView);
-
-                if (index == numProcesses-1 && childCount > numProcesses) {
-                    for (int i = childCount-1; i >= numProcesses; i--) container.removeViewAt(i);
-                }
+                renderProcessRow(index, numProcesses, processInfo);
             }
         });
+    }
+
+    private void renderProcessRow(int index, int numProcesses, ProcessInfo processInfo) {
+        if (processInfo == null) return;
+        final LinearLayout container = findViewById(R.id.LLProcessList);
+        setBottomBarText(activity.getString(R.string.processes)+": " + numProcesses);
+        findViewById(R.id.TVEmptyText).setVisibility(View.GONE);
+
+        int childCount = container.getChildCount();
+        View itemView = index < childCount ? container.getChildAt(index) : inflater.inflate(R.layout.process_info_list_item, container, false);
+        ((TextView)itemView.findViewById(R.id.TVName)).setText(processInfo.name+(processInfo.wow64Process ? " *32" : ""));
+        ((TextView)itemView.findViewById(R.id.TVPID)).setText(String.valueOf(processInfo.pid));
+        ((TextView)itemView.findViewById(R.id.TVMemoryUsage)).setText(processInfo.getFormattedMemoryUsage());
+        itemView.findViewById(R.id.BTMenu).setOnClickListener((v) -> showListItemMenu(v, processInfo));
+
+        XServer xServer = activity.getXServer();
+        Window window = null;
+
+        if (xServer != null) {
+            XLock xlock = xServer.tryLock(3, XServer.Lockable.WINDOW_MANAGER);
+            if (xlock != null) {
+                try (XLock ignored = xlock) {
+                    window = xServer.windowManager.findWindowWithProcessId(processInfo.pid);
+                } catch (Throwable ignored) {}
+            }
+        }
+
+        ImageView ivIcon = itemView.findViewById(R.id.IVIcon);
+        ivIcon.setImageResource(R.drawable.taskmgr_process);
+        if (window != null && xServer != null) {
+            Bitmap icon = xServer.pixmapManager.getWindowIcon(window);
+            if (icon != null) ivIcon.setImageBitmap(icon);
+        }
+
+        if (index >= childCount) container.addView(itemView);
+
+        if (index == numProcesses-1 && childCount > numProcesses) {
+            for (int i = childCount-1; i >= numProcesses; i--) container.removeViewAt(i);
+        }
     }
 
     private void updateCPUPanel() {

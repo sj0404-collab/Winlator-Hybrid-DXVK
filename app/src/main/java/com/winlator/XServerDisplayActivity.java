@@ -686,9 +686,16 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
 
         globalCursorSpeed = preferences.getFloat("cursor_speed", 1.15f);
         capturePointerOnExternalMouse = preferences.getBoolean("capture_pointer_on_external_mouse", true);
+        if (!preferences.getBoolean("v125_touchpad_relative_fixed", false)) {
+            preferences.edit()
+                .putBoolean("move_cursor_to_touchpoint", false)
+                .putInt("default_touch_controls_profile_id", 5)
+                .putBoolean("v125_touchpad_relative_fixed", true)
+                .apply();
+        }
         touchpadView = new TouchpadView(this, xServer, capturePointerOnExternalMouse);
         touchpadView.setSensitivity(globalCursorSpeed);
-        touchpadView.setMoveCursorToTouchpoint(preferences.getBoolean("move_cursor_to_touchpoint", true));
+        touchpadView.setMoveCursorToTouchpoint(preferences.getBoolean("move_cursor_to_touchpoint", false));
         touchpadView.setFourFingersTapCallback(() -> {
             if (!drawerLayout.isDrawerOpen(GravityCompat.START)) drawerLayout.openDrawer(GravityCompat.START);
         });
@@ -1113,11 +1120,20 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
             }
             if (execPath == null || execPath.isEmpty()) {
                 if (shortcut.isLinkPath()) {
-                    pendingExecCommand = "\""+shortcut.path+"\"";
-                    pendingExecArgs = execArgs.trim();
-                    String linkDir = FileUtils.getDirname(shortcut.path);
-                    if (linkDir != null && !linkDir.isEmpty() && linkDir.contains(":")) {
-                        cmdArgs = "/dir " + StringUtils.escapeDOSPath(linkDir) + " \"wfm.exe\"";
+                    String unixLnkPath = WineUtils.dosToUnixPath(shortcut.path, container);
+                    com.winlator.win32.MSLink.LinkInfo linkInfo = unixLnkPath != null ? com.winlator.win32.MSLink.extractLinkInfo(new File(unixLnkPath)) : null;
+                    if (linkInfo != null && linkInfo.targetPath != null && !linkInfo.targetPath.isEmpty() && !linkInfo.targetPath.endsWith("\\")) {
+                        execPath = linkInfo.targetPath;
+                        if (linkInfo.arguments != null && !linkInfo.arguments.isEmpty()) {
+                            execArgs += " " + linkInfo.arguments;
+                        }
+                    } else {
+                        pendingExecCommand = "C:\\windows\\system32\\cmd.exe";
+                        pendingExecArgs = "/c start \"\" \"" + shortcut.path + "\"" + execArgs;
+                        String linkDir = FileUtils.getDirname(shortcut.path);
+                        if (linkDir != null && !linkDir.isEmpty() && linkDir.contains(":")) {
+                            cmdArgs = "/dir " + StringUtils.escapeDOSPath(linkDir) + " \"wfm.exe\"";
+                        }
                     }
                 }
                 else execPath = shortcut.path;
@@ -1126,26 +1142,27 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
         else {
             Intent intent = getIntent();
             if (intent.hasExtra("exec_path")) {
-                execPath = WineUtils.unixToDOSPath(intent.getStringExtra("exec_path"), container);
+                String rawIntentPath = intent.getStringExtra("exec_path");
+                execPath = WineUtils.unixToDOSPath(rawIntentPath, container);
 
-                if (execPath.endsWith(".lnk")) {
-                    File lnkUnix = new File(intent.getStringExtra("exec_path"));
+                if (execPath != null && execPath.toLowerCase(java.util.Locale.ENGLISH).endsWith(".lnk")) {
+                    File lnkUnix = new File(rawIntentPath);
                     com.winlator.win32.MSLink.LinkInfo linkInfo = com.winlator.win32.MSLink.extractLinkInfo(lnkUnix);
-                    if (linkInfo != null && linkInfo.targetPath != null && !linkInfo.targetPath.isEmpty()) {
+                    if (linkInfo != null && linkInfo.targetPath != null && !linkInfo.targetPath.isEmpty() && !linkInfo.targetPath.endsWith("\\")) {
                         execPath = linkInfo.targetPath;
                         if (linkInfo.arguments != null && !linkInfo.arguments.isEmpty()) {
                             execArgs = " " + linkInfo.arguments;
                         }
                     } else {
-                        pendingExecCommand = "\""+execPath+"\"";
-                        pendingExecArgs = "";
+                        pendingExecCommand = "C:\\windows\\system32\\cmd.exe";
+                        pendingExecArgs = "/c start \"\" \"" + execPath + "\"";
                         execPath = null;
                     }
                 }
             }
         }
 
-        if (execPath != null && !execPath.isEmpty() && !execPath.equals("\\")) {
+        if (execPath != null && !execPath.isEmpty() && !execPath.equals("\\") && !execPath.endsWith("\\")) {
             try {
                 String execDir = FileUtils.getDirname(execPath);
                 String filename = FileUtils.getName(execPath);
@@ -1162,16 +1179,14 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
                 if (lowerFile.endsWith(".msi")) {
                     pendingExecCommand = "C:\\windows\\system32\\msiexec.exe";
                     pendingExecArgs = "/i \"" + fullTargetDos + "\"" + execArgs;
+                    cmdArgs = "/dir "+StringUtils.escapeDOSPath(execDir)+" \"C:\\windows\\wfm.exe\"";
                 } else if (lowerFile.endsWith(".bat") || lowerFile.endsWith(".cmd")) {
                     pendingExecCommand = "C:\\windows\\system32\\cmd.exe";
                     pendingExecArgs = "/c \"" + fullTargetDos + "\"" + execArgs;
+                    cmdArgs = "/dir "+StringUtils.escapeDOSPath(execDir)+" \"C:\\windows\\wfm.exe\"";
                 } else {
-                    pendingExecCommand = "\"" + fullTargetDos + "\"";
-                    pendingExecArgs = execArgs.trim();
+                    cmdArgs = "/dir " + StringUtils.escapeDOSPath(execDir) + " \"" + filename + "\"" + execArgs;
                 }
-                // Запускаем wfm.exe с рабочей директорией самой игры (execDir), чтобы Рабочий стол Windows
-                // не закрывался и не вылетал при выходе из игры или установщика внутри Рабочего стола!
-                cmdArgs = "/dir "+StringUtils.escapeDOSPath(execDir)+" \"C:\\windows\\wfm.exe\"";
             } catch (Throwable ignored) {}
         }
 

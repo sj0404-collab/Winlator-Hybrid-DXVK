@@ -92,6 +92,9 @@ public class ControlElement {
     private Range range;
     private byte orientation;
     private PointF currentPosition;
+    private float trackpadDownX;
+    private float trackpadDownY;
+    private long trackpadDownTime;
     private RangeScroller scroller;
     private CubicBezierInterpolator interpolator;
     private Object touchTime;
@@ -324,7 +327,11 @@ public class ControlElement {
                 halfHeight = snappingSize * 7;
                 break;
             }
-            case TRACKPAD:
+            case TRACKPAD: {
+                halfWidth = (int)(snappingSize * 7.5f);
+                halfHeight = (int)(snappingSize * 5.0f);
+                break;
+            }
             case STICK: {
                 halfWidth = snappingSize * 6;
                 halfHeight = snappingSize * 6;
@@ -650,14 +657,30 @@ public class ControlElement {
                 break;
             }
             case TRACKPAD: {
+                int oldColor = paint.getColor();
                 float radius = boundingBox.height() * 0.15f;
+                paint.setStyle(Paint.Style.FILL);
+                paint.setColor(ColorUtils.setAlphaComponent(getDarkColor(), 95));
+                canvas.drawRoundRect(boundingBox.left, boundingBox.top, boundingBox.right, boundingBox.bottom, radius, radius, paint);
+
+                paint.setStyle(Paint.Style.STROKE);
+                paint.setColor(oldColor);
                 canvas.drawRoundRect(boundingBox.left, boundingBox.top, boundingBox.right, boundingBox.bottom, radius, radius, paint);
                 float offset = strokeWidth * 2.5f;
-                float innerStrokeWidth = strokeWidth * 2;
+                float innerStrokeWidth = strokeWidth * 1.5f;
                 float innerHeight = boundingBox.height() - offset * 2;
                 radius = (innerHeight / boundingBox.height()) * radius - (innerStrokeWidth * 0.5f + strokeWidth * 0.5f);
                 paint.setStrokeWidth(innerStrokeWidth);
                 canvas.drawRoundRect(boundingBox.left + offset, boundingBox.top + offset, boundingBox.right - offset, boundingBox.bottom - offset, radius, radius, paint);
+
+                String label = (text != null && !text.isEmpty()) ? text : "ТАЧПАД";
+                paint.setStyle(Paint.Style.FILL);
+                paint.setColor(ColorUtils.setAlphaComponent(lightColor, 180));
+                paint.setTextAlign(Paint.Align.CENTER);
+                paint.setTextSize(Math.min(getTextSizeForWidth(paint, label, boundingBox.width() * 0.65f), snappingSize * 1.6f * scale));
+                canvas.drawText(label, boundingBox.centerX(), boundingBox.centerY() - ((paint.descent() + paint.ascent()) * 0.5f), paint);
+                paint.setStyle(Paint.Style.STROKE);
+                paint.setColor(oldColor);
                 break;
             }
             case RADIAL_MENU: {
@@ -780,8 +803,10 @@ public class ControlElement {
             elementJSONObject.put("bindings", bindingsJSONArray);
             elementJSONObject.put("scale", Float.valueOf(scale));
             if (opacity < 1.0f) elementJSONObject.put("opacity", Float.valueOf(opacity));
-            elementJSONObject.put("x", (float)x / inputControlsView.getMaxWidth());
-            elementJSONObject.put("y", (float)y / inputControlsView.getMaxHeight());
+            int maxW = Math.max(1, Math.max(inputControlsView.getMaxWidth(), inputControlsView.getMaxHeight()));
+            int maxH = Math.max(1, Math.min(inputControlsView.getMaxWidth(), inputControlsView.getMaxHeight()));
+            elementJSONObject.put("x", Mathf.clamp((float)x / maxW, 0.04f, 0.96f));
+            elementJSONObject.put("y", Mathf.clamp((float)y / maxH, 0.04f, 0.96f));
             elementJSONObject.put("toggleSwitch", propertyFlags.isSet(FLAG_TOGGLE_SWITCH));
             elementJSONObject.put("text", text);
             elementJSONObject.put("iconId", iconId);
@@ -854,6 +879,9 @@ public class ControlElement {
                 if (type == Type.TRACKPAD) {
                     if (currentPosition == null) currentPosition = new PointF();
                     currentPosition.set(x, y);
+                    trackpadDownX = x;
+                    trackpadDownY = y;
+                    trackpadDownTime = System.currentTimeMillis();
                 }
                 return handleTouchMove(pointerId, x, y);
             }
@@ -974,6 +1002,9 @@ public class ControlElement {
             inputControlsView.getTouchpadView().mouseMove(x, y, MotionEvent.ACTION_MOVE);
             return true;
         }
+        else if (pointerId == currentPointerId) {
+            return true;
+        }
         else return false;
     }
 
@@ -1023,6 +1054,14 @@ public class ControlElement {
                 }
                 else if (type == Type.STICK) {
                     inputControlsView.invalidate();
+                }
+                else if (type == Type.TRACKPAD) {
+                    long dt = System.currentTimeMillis() - trackpadDownTime;
+                    float dist = (float)Math.hypot(x - trackpadDownX, y - trackpadDownY);
+                    if (dt < TouchpadView.MAX_TAP_MILLISECONDS && dist < TouchpadView.MAX_TAP_TRAVEL_DISTANCE) {
+                        inputControlsView.handleInputEvent(Binding.MOUSE_LEFT_BUTTON, true);
+                        inputControlsView.postDelayed(() -> inputControlsView.handleInputEvent(Binding.MOUSE_LEFT_BUTTON, false), 30);
+                    }
                 }
 
                 if (currentPosition != null) currentPosition = null;

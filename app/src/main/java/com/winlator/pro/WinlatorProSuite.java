@@ -69,6 +69,7 @@ import com.winlator.win32.MSLink;
 import com.winlator.win32.PEParser;
 import com.winlator.winhandler.TaskManagerDialog;
 import com.winlator.xenvironment.RootFS;
+import com.winlator.xserver.Pointer;
 import com.winlator.xserver.Window;
 import com.winlator.xserver.XLock;
 import com.winlator.xserver.XServer;
@@ -636,6 +637,57 @@ public class WinlatorProSuite {
                 if (!dst32.isFile()) {
                     File src32 = new File(wineX86, dll);
                     if (src32.isFile()) FileUtils.copy(src32, dst32);
+                }
+            }
+
+            patchWinHandlerBinaryToStayAlive(rootDir, container);
+        } catch (Throwable ignored) {}
+    }
+
+    /**
+     * Патчит 6 байт условного перехода `je 0x140002f3c` (`0F 84 C1 00 00 00` после `80 7D C0 02`)
+     * на `90 90 90 90 90 90` (NOP) внутри `winhandler.exe`, чтобы `winhandler.exe` не завершался
+     * через 2 секунды после закрытия `wfm.exe` и всегда поддерживал «Диспетчер задач» и геймпад!
+     */
+    public static void patchWinHandlerBinaryToStayAlive(File rootDir, Container container) {
+        try {
+            List<File> candidates = new ArrayList<>();
+            if (container != null && container.getRootDir() != null) {
+                candidates.add(new File(container.getRootDir(), ".wine/drive_c/windows/winhandler.exe"));
+            }
+            if (rootDir != null) {
+                candidates.add(new File(rootDir, "home/xuser/.wine/drive_c/windows/winhandler.exe"));
+                candidates.add(new File(rootDir, "opt/wine/lib/wine/x86_64-windows/winhandler.exe"));
+            }
+            final byte[] sig = new byte[]{
+                (byte) 0x80, (byte) 0x7D, (byte) 0xC0, (byte) 0x02,
+                (byte) 0x0F, (byte) 0x84, (byte) 0xC1, (byte) 0x00, (byte) 0x00, (byte) 0x00
+            };
+            for (File exe : candidates) {
+                if (exe == null || !exe.isFile()) continue;
+                byte[] data = FileUtils.read(exe);
+                if (data == null || data.length < 1024) continue;
+                boolean modified = false;
+                for (int i = 0; i <= data.length - sig.length; i++) {
+                    boolean match = true;
+                    for (int j = 0; j < sig.length; j++) {
+                        if (data[i + j] != sig[j]) {
+                            match = false;
+                            break;
+                        }
+                    }
+                    if (match) {
+                        for (int k = 4; k < 10; k++) {
+                            data[i + k] = (byte) 0x90;
+                        }
+                        modified = true;
+                        break;
+                    }
+                }
+                if (modified) {
+                    try (FileOutputStream fos = new FileOutputStream(exe)) {
+                        fos.write(data);
+                    }
                 }
             }
         } catch (Throwable ignored) {}
@@ -1920,28 +1972,65 @@ public class WinlatorProSuite {
 
         Button btnApplyBest = createStyledButton(context, "✅ Применить этот режим", 0xFF059669, 0xFF34D399);
         btnApplyBest.setOnClickListener(v -> {
-            if (containerOrNull != null) {
-                if (activeMode[0] == 2) {
-                    containerOrNull.setDXWrapper("wined3d");
-                } else {
-                    containerOrNull.setDXWrapper("dxvk");
-                }
-                containerOrNull.saveData();
+            SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(context);
+            int mode = activeMode[0];
+            int mappedApiIdx = 0;
+            if (mode == 2) mappedApiIdx = 3; // WineD3D OpenGL ES
+            else if (mode == 3) mappedApiIdx = 4; // Zink + VirGL OpenGL
+            else mappedApiIdx = 0; // Hybrid DXVK Vulkan
+
+            SharedPreferences.Editor ed = prefs.edit().putInt("pro_gfx_api_idx", mappedApiIdx);
+            if (mode == 4) {
+                ed.putBoolean("pro_shader_cas", true)
+                  .putBoolean("pro_shader_hdr", true)
+                  .putBoolean("pro_shader_fxaa", true);
             }
-            AppUtils.showToast(context, "✅ Выбранный графический режим сохранён для контейнера!");
+            ed.apply();
+
+            Container targetC = containerOrNull != null ? containerOrNull : resolveTargetContainer(context, null);
+            if (targetC != null) {
+                applySelectedGraphicsWrapperImmediately(context, targetC, mappedApiIdx, prefs.getInt("pro_fps_limit", 120));
+                if (mode == 1) {
+                    try {
+                        File winDir = new File(RootFS.find(context).getRootDir(), RootFS.WINEPREFIX + "/drive_c/windows");
+                        TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, context, "dxwrapper/vkd3d-2.14.1.tzst", winDir);
+                    } catch (Throwable ignored) {}
+                }
+                targetC.saveData();
+            }
+            if (context instanceof XServerDisplayActivity) {
+                applySavedShadersToRenderer((XServerDisplayActivity) context);
+            }
+            AppUtils.showToast(context, "✅ Выбранный режим графики и шейдеров применён!");
             alive[0] = false;
             dialog.dismiss();
         });
-        btnRow.addView(btnApplyBest, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.3f) {{
+        btnRow.addView(btnApplyBest, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.2f) {{
             rightMargin = dp(context, 6);
         }});
+
+        if (context instanceof XServerDisplayActivity) {
+            final XServerDisplayActivity xAct = (XServerDisplayActivity) context;
+            Button btnRun3d = createStyledButton(context, "🎮 3D Тест DX", 0xFF0284C7, 0xFF38BDF8);
+            btnRun3d.setOnClickListener(v -> {
+                if (xAct.getWinHandler() != null) {
+                    xAct.getWinHandler().exec("C:\\windows\\system32\\testd3d.exe", "");
+                    AppUtils.showToast(context, "🚀 Запущен аппаратный 3D-тест DirectX (testd3d.exe)");
+                }
+                alive[0] = false;
+                dialog.dismiss();
+            });
+            btnRow.addView(btnRun3d, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 0.9f) {{
+                rightMargin = dp(context, 6);
+            }});
+        }
 
         Button btnClose = createStyledButton(context, "Закрыть", 0xFF334155, 0xFF64748B);
         btnClose.setOnClickListener(v -> {
             alive[0] = false;
             dialog.dismiss();
         });
-        btnRow.addView(btnClose, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 0.7f));
+        btnRow.addView(btnClose, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 0.65f));
 
         root.addView(btnRow);
         dialog.show();
@@ -2049,6 +2138,7 @@ public class WinlatorProSuite {
         gpLp.rightMargin = dp(activity, 3);
         statusLine.addView(btnQuickGamepad, gpLp);
 
+        final LinearLayout floatingTouchpadPanel = new LinearLayout(activity);
         final Button btnCenterCursor = createStyledButton(activity, "🖱️", 0xFF0284C7, 0xFF38BDF8);
         btnCenterCursor.setTextSize(TypedValue.COMPLEX_UNIT_SP, 9.5f);
         btnCenterCursor.setMinHeight(dp(activity, 22));
@@ -2058,15 +2148,21 @@ public class WinlatorProSuite {
             try {
                 XServer xs = activity.getXServer();
                 if (xs != null) {
-                    xs.injectPointerMove(xs.screenInfo.width / 2, xs.screenInfo.height / 2);
                     if (xs.getRenderer() != null) {
                         xs.getRenderer().setCursorVisible(true);
                         xs.getRenderer().setCursorScale(1.45f);
                     }
                 }
                 touchpadView.setEnabled(true);
-                touchpadView.setMoveCursorToTouchpoint(true);
-                AppUtils.showToast(activity, "🖱️ Курсор мыши возвращён в центр экрана!");
+                // ВАЖНО: отключаем привязку курсора к точке касания посреди экрана, чтобы мышь не бегала за пальцем!
+                touchpadView.setMoveCursorToTouchpoint(false);
+                if (floatingTouchpadPanel.getVisibility() == View.VISIBLE) {
+                    floatingTouchpadPanel.setVisibility(View.GONE);
+                    AppUtils.showToast(activity, "🖱️ Панель Тачпада скрыта");
+                } else {
+                    floatingTouchpadPanel.setVisibility(View.VISIBLE);
+                    AppUtils.showToast(activity, "🖱️ Тачпад + Мышь (ЛКМ | ▲ СКМ ▼ | ПКМ) открыты!");
+                }
             } catch (Throwable ignored) {}
         });
         LinearLayout.LayoutParams curLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -2162,7 +2258,10 @@ public class WinlatorProSuite {
         // 3. КОМПАКТНАЯ ПЕРЕТАСКИВАЕМАЯ И СКРЫВАЕМАЯ ПАНЕЛЬ ОВЕРЛЕЯ УПРАВЛЕНИЯ
         setupLiveOverlayCustomizerPanel(activity, rootView, overlayEditorBar, inputControlsView, touchpadView);
 
-        // 4. ПОТОКОБЕЗОПАСНЫЙ МОНИТОР ОКОН И ОЗУ (С XLock, БЕЗ КОНФЛИКТОВ И ВЫЛЕТОВ!)
+        // 4. ВЫДЕЛЕННЫЙ ПЕРЕТАСКИВАЕМЫЙ ТАЧПАД + МЫШЬ (ЛКМ | ▲ Скролл вверх / СКМ / ▼ Скролл вниз | ПКМ)
+        setupFloatingTouchpadAndMouseWidget(activity, rootView, floatingTouchpadPanel, touchpadView);
+
+        // 5. ПОТОКОБЕЗОПАСНЫЙ МОНИТОР ОКОН И ОЗУ (В ФОНОВОМ ПОТОКЕ С tryLock, БЕЗ БЛОКИРОВКИ UI И ANR!)
         startLiveProcessAndFreezeWatchdog(activity, tvWatchdog, exeShortName);
     }
 
@@ -2193,32 +2292,304 @@ public class WinlatorProSuite {
 
     public static void ensureRichControlPresetsInstalled(Context context) {
         try {
-            InputControlsManager manager = new InputControlsManager(context);
-            ArrayList<ControlsProfile> profiles = manager.getProfiles(false);
-            boolean hasShooterPro = false;
-            boolean hasRpgStrategy = false;
-            boolean hasRacing = false;
-            for (ControlsProfile p : profiles) {
-                if (p.getName().contains("Шутеры FPS Pro")) hasShooterPro = true;
-                if (p.getName().contains("RPG и Герои")) hasRpgStrategy = true;
-                if (p.getName().contains("Гонки и Аркады")) hasRacing = true;
+            File profilesDir = InputControlsManager.getProfilesDir(context);
+            File p5 = new File(profilesDir, "controls-5.icp");
+            File p6 = new File(profilesDir, "controls-6.icp");
+            boolean needRefresh5 = !p5.isFile();
+            if (p5.isFile()) {
+                String s5 = FileUtils.readString(p5);
+                if (s5 == null || !s5.contains("ТАЧПАД") || !s5.contains("MOUSE_MIDDLE_BUTTON") || !s5.contains("MOUSE_SCROLL_UP")) {
+                    needRefresh5 = true;
+                }
             }
-            if (!hasShooterPro && !profiles.isEmpty()) {
-                ControlsProfile p = manager.duplicateProfile(profiles.get(Math.min(3, profiles.size() - 1)));
-                p.setName("🔫 Шутеры FPS Pro (WASD Стик + Огонь ЛКМ + Прицел ПКМ)");
-                p.save();
+            if (needRefresh5) {
+                FileUtils.copy(context, "inputcontrols/profiles/controls-5.icp", p5);
             }
-            if (!hasRpgStrategy && !profiles.isEmpty()) {
-                ControlsProfile p = manager.duplicateProfile(profiles.get(0));
-                p.setName("⚔️ RPG и Герои (Мышь + Скиллы 1-9 + Инвентарь)");
-                p.save();
-            }
-            if (!hasRacing && !profiles.isEmpty()) {
-                ControlsProfile p = manager.duplicateProfile(profiles.get(Math.min(2, profiles.size() - 1)));
-                p.setName("🏎️ Гонки и Аркады (Руль + Газ + Тормоз + Нитро)");
-                p.save();
+            if (!p6.isFile()) {
+                FileUtils.copy(context, "inputcontrols/profiles/controls-6.icp", p6);
             }
         } catch (Throwable ignored) {}
+    }
+
+    /**
+     * Выделенный перетаскиваемый Тачпад + Кнопки мыши в правильном порядке:
+     * Слева: [ ЛКМ ]
+     * Посередине: [ ▲ Скролл вверх ] / [ СКМ ] / [ ▼ Скролл вниз ]
+     * Справа: [ ПКМ ]
+     * При работе с этим тачпадом курсор мыши двигается плавно относительно пальца и НЕ прыгает посреди экрана!
+     */
+    private static void setupFloatingTouchpadAndMouseWidget(
+        final XServerDisplayActivity activity,
+        final FrameLayout rootView,
+        final LinearLayout widget,
+        final TouchpadView touchpadView
+    ) {
+        widget.setOrientation(LinearLayout.VERTICAL);
+        widget.setPadding(dp(activity, 6), dp(activity, 5), dp(activity, 6), dp(activity, 6));
+        widget.setBackground(roundedBg(0xD80B1120, 0xFF38BDF8, 1, 12, activity));
+        widget.setVisibility(View.GONE);
+
+        int wPx = dp(activity, 236);
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
+            wPx,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            Gravity.TOP | Gravity.START
+        );
+        lp.leftMargin = Math.max(dp(activity, 16), AppUtils.getScreenWidth() - wPx - dp(activity, 18));
+        lp.topMargin = Math.max(dp(activity, 44), AppUtils.getScreenHeight() - dp(activity, 255));
+        widget.setLayoutParams(lp);
+
+        // Шапка виджета для перетаскивания пальцем + кнопка Центрирования + кнопка Скрытия
+        LinearLayout header = new LinearLayout(activity);
+        header.setOrientation(LinearLayout.HORIZONTAL);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+
+        TextView tvTitle = new TextView(activity);
+        tvTitle.setText("✥ 🖱️ Тачпад (тяните)");
+        tvTitle.setTextColor(0xFF38BDF8);
+        tvTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f);
+        tvTitle.setTypeface(Typeface.DEFAULT_BOLD);
+        tvTitle.setPadding(dp(activity, 2), dp(activity, 1), dp(activity, 4), dp(activity, 2));
+        header.addView(tvTitle, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        makeViewDraggable(widget, tvTitle, rootView);
+
+        Button btnCenter = createStyledButton(activity, "🎯 В центр", 0xFF1E293B, 0xFF38BDF8);
+        btnCenter.setTextSize(TypedValue.COMPLEX_UNIT_SP, 9f);
+        btnCenter.setMinHeight(dp(activity, 20));
+        btnCenter.setMinimumHeight(dp(activity, 20));
+        btnCenter.setPadding(dp(activity, 5), dp(activity, 1), dp(activity, 5), dp(activity, 1));
+        btnCenter.setOnClickListener(v -> {
+            XServer xs = activity.getXServer();
+            if (xs != null) {
+                xs.injectPointerMove(xs.screenInfo.width / 2, xs.screenInfo.height / 2);
+                if (xs.getRenderer() != null) xs.getRenderer().setCursorVisible(true);
+            }
+            touchpadView.setMoveCursorToTouchpoint(false);
+        });
+        header.addView(btnCenter, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT) {{
+            rightMargin = dp(activity, 4);
+        }});
+
+        Button btnHide = createStyledButton(activity, "✕", 0xFF334155, 0xFF64748B);
+        btnHide.setTextSize(TypedValue.COMPLEX_UNIT_SP, 9f);
+        btnHide.setMinHeight(dp(activity, 20));
+        btnHide.setMinimumHeight(dp(activity, 20));
+        btnHide.setPadding(dp(activity, 5), dp(activity, 1), dp(activity, 5), dp(activity, 1));
+        btnHide.setOnClickListener(v -> widget.setVisibility(View.GONE));
+        header.addView(btnHide, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        widget.addView(header);
+
+        // Сенсорная поверхность ТАЧПАДА
+        final TextView padSurface = new TextView(activity);
+        padSurface.setText("🖱️ ТАЧПАД\n(водите пальцем • тап = ЛКМ)");
+        padSurface.setTextColor(0xB3E2E8F0);
+        padSurface.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f);
+        padSurface.setGravity(Gravity.CENTER);
+        padSurface.setBackground(roundedBg(0xCC1E293B, 0xFF38BDF8, 1, 8, activity));
+        LinearLayout.LayoutParams padLp = new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            dp(activity, 105)
+        );
+        padLp.topMargin = dp(activity, 4);
+        padLp.bottomMargin = dp(activity, 5);
+        padSurface.setLayoutParams(padLp);
+
+        padSurface.setOnTouchListener(new View.OnTouchListener() {
+            private float lastX, lastY, downX, downY;
+            private long downTime;
+
+            @Override
+            public boolean onTouch(View v, MotionEvent event) {
+                XServer xs = activity.getXServer();
+                if (xs == null) return true;
+                touchpadView.setMoveCursorToTouchpoint(false);
+
+                switch (event.getActionMasked()) {
+                    case MotionEvent.ACTION_DOWN:
+                        lastX = downX = event.getX();
+                        lastY = downY = event.getY();
+                        downTime = System.currentTimeMillis();
+                        padSurface.setBackground(roundedBg(0xEE0F172A, 0xFF34D399, 1, 8, activity));
+                        return true;
+
+                    case MotionEvent.ACTION_MOVE:
+                        float curX = event.getX();
+                        float curY = event.getY();
+                        float rawDx = (curX - lastX) * 1.45f;
+                        float rawDy = (curY - lastY) * 1.45f;
+                        if (Math.abs(rawDx) > 5f) rawDx *= 1.35f;
+                        if (Math.abs(rawDy) > 5f) rawDy *= 1.35f;
+                        lastX = curX;
+                        lastY = curY;
+                        int dx = Math.round(rawDx);
+                        int dy = Math.round(rawDy);
+                        if (dx != 0 || dy != 0) {
+                            xs.injectPointerMoveDelta(dx, dy);
+                        }
+                        return true;
+
+                    case MotionEvent.ACTION_UP:
+                    case MotionEvent.ACTION_CANCEL:
+                        padSurface.setBackground(roundedBg(0xCC1E293B, 0xFF38BDF8, 1, 8, activity));
+                        long dt = System.currentTimeMillis() - downTime;
+                        double dist = Math.hypot(event.getX() - downX, event.getY() - downY);
+                        if (event.getActionMasked() == MotionEvent.ACTION_UP && dt < 210 && dist < dp(activity, 8)) {
+                            xs.injectPointerButtonPress(Pointer.Button.BUTTON_LEFT);
+                            v.postDelayed(() -> xs.injectPointerButtonRelease(Pointer.Button.BUTTON_LEFT), 30);
+                        }
+                        return true;
+                }
+                return true;
+            }
+        });
+        widget.addView(padSurface);
+
+        // Ряд кнопок мыши в правильном порядке: [ ЛКМ ]  |  [ ▲ / СКМ / ▼ ]  |  [ ПКМ ]
+        LinearLayout mouseButtonsRow = new LinearLayout(activity);
+        mouseButtonsRow.setOrientation(LinearLayout.HORIZONTAL);
+        mouseButtonsRow.setGravity(Gravity.CENTER_VERTICAL);
+
+        // 1. Левая кнопка мыши (ЛКМ) — слева!
+        final Button btnLmb = createStyledButton(activity, "ЛКМ\n(Левая)", 0xFF0284C7, 0xFF38BDF8);
+        btnLmb.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f);
+        btnLmb.setMinHeight(dp(activity, 68));
+        btnLmb.setMinimumHeight(dp(activity, 68));
+        btnLmb.setOnTouchListener((v, event) -> {
+            XServer xs = activity.getXServer();
+            if (xs == null) return true;
+            if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
+                btnLmb.setBackground(roundedBg(0xFF059669, 0xFF34D399, 1, 8, activity));
+                xs.injectPointerButtonPress(Pointer.Button.BUTTON_LEFT);
+            } else if (event.getActionMasked() == MotionEvent.ACTION_UP || event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
+                btnLmb.setBackground(roundedBg(0xFF0284C7, 0xFF38BDF8, 1, 8, activity));
+                xs.injectPointerButtonRelease(Pointer.Button.BUTTON_LEFT);
+            }
+            return true;
+        });
+        mouseButtonsRow.addView(btnLmb, new LinearLayout.LayoutParams(0, dp(activity, 68), 1.05f) {{
+            rightMargin = dp(activity, 4);
+        }});
+
+        // 2. Средняя колонка (Колесо прокрутки со стрелками ▲ Вверх / СКМ / ▼ Вниз) — строго посередине!
+        LinearLayout middleScrollCol = new LinearLayout(activity);
+        middleScrollCol.setOrientation(LinearLayout.VERTICAL);
+
+        final Handler scrollHandler = new Handler(Looper.getMainLooper());
+        final boolean[] scrollUpHeld = {false};
+        final boolean[] scrollDownHeld = {false};
+
+        final Runnable repeatScrollUp = new Runnable() {
+            @Override
+            public void run() {
+                if (!scrollUpHeld[0]) return;
+                XServer xs = activity.getXServer();
+                if (xs != null) {
+                    xs.injectPointerButtonPress(Pointer.Button.BUTTON_SCROLL_UP);
+                    xs.injectPointerButtonRelease(Pointer.Button.BUTTON_SCROLL_UP);
+                }
+                scrollHandler.postDelayed(this, 90);
+            }
+        };
+
+        final Runnable repeatScrollDown = new Runnable() {
+            @Override
+            public void run() {
+                if (!scrollDownHeld[0]) return;
+                XServer xs = activity.getXServer();
+                if (xs != null) {
+                    xs.injectPointerButtonPress(Pointer.Button.BUTTON_SCROLL_DOWN);
+                    xs.injectPointerButtonRelease(Pointer.Button.BUTTON_SCROLL_DOWN);
+                }
+                scrollHandler.postDelayed(this, 90);
+            }
+        };
+
+        final Button btnScrollUp = createStyledButton(activity, "▲", 0xFF334155, 0xFF94A3B8);
+        btnScrollUp.setTextSize(TypedValue.COMPLEX_UNIT_SP, 9.5f);
+        btnScrollUp.setPadding(0, 0, 0, 0);
+        btnScrollUp.setMinHeight(dp(activity, 21));
+        btnScrollUp.setMinimumHeight(dp(activity, 21));
+        btnScrollUp.setOnTouchListener((v, event) -> {
+            if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
+                scrollUpHeld[0] = true;
+                btnScrollUp.setBackground(roundedBg(0xFF059669, 0xFF34D399, 1, 6, activity));
+                repeatScrollUp.run();
+            } else if (event.getActionMasked() == MotionEvent.ACTION_UP || event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
+                scrollUpHeld[0] = false;
+                scrollHandler.removeCallbacks(repeatScrollUp);
+                btnScrollUp.setBackground(roundedBg(0xFF334155, 0xFF94A3B8, 1, 6, activity));
+            }
+            return true;
+        });
+        middleScrollCol.addView(btnScrollUp, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(activity, 21)) {{
+            bottomMargin = dp(activity, 2);
+        }});
+
+        final Button btnMmb = createStyledButton(activity, "СКМ", 0xFF475569, 0xFFFACC15);
+        btnMmb.setTextSize(TypedValue.COMPLEX_UNIT_SP, 9.5f);
+        btnMmb.setPadding(0, 0, 0, 0);
+        btnMmb.setMinHeight(dp(activity, 22));
+        btnMmb.setMinimumHeight(dp(activity, 22));
+        btnMmb.setOnTouchListener((v, event) -> {
+            XServer xs = activity.getXServer();
+            if (xs == null) return true;
+            if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
+                btnMmb.setBackground(roundedBg(0xFFD97706, 0xFFFACC15, 1, 6, activity));
+                xs.injectPointerButtonPress(Pointer.Button.BUTTON_MIDDLE);
+            } else if (event.getActionMasked() == MotionEvent.ACTION_UP || event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
+                btnMmb.setBackground(roundedBg(0xFF475569, 0xFFFACC15, 1, 6, activity));
+                xs.injectPointerButtonRelease(Pointer.Button.BUTTON_MIDDLE);
+            }
+            return true;
+        });
+        middleScrollCol.addView(btnMmb, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(activity, 22)) {{
+            bottomMargin = dp(activity, 2);
+        }});
+
+        final Button btnScrollDown = createStyledButton(activity, "▼", 0xFF334155, 0xFF94A3B8);
+        btnScrollDown.setTextSize(TypedValue.COMPLEX_UNIT_SP, 9.5f);
+        btnScrollDown.setPadding(0, 0, 0, 0);
+        btnScrollDown.setMinHeight(dp(activity, 21));
+        btnScrollDown.setMinimumHeight(dp(activity, 21));
+        btnScrollDown.setOnTouchListener((v, event) -> {
+            if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
+                scrollDownHeld[0] = true;
+                btnScrollDown.setBackground(roundedBg(0xFF059669, 0xFF34D399, 1, 6, activity));
+                repeatScrollDown.run();
+            } else if (event.getActionMasked() == MotionEvent.ACTION_UP || event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
+                scrollDownHeld[0] = false;
+                scrollHandler.removeCallbacks(repeatScrollDown);
+                btnScrollDown.setBackground(roundedBg(0xFF334155, 0xFF94A3B8, 1, 6, activity));
+            }
+            return true;
+        });
+        middleScrollCol.addView(btnScrollDown, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(activity, 21)));
+
+        mouseButtonsRow.addView(middleScrollCol, new LinearLayout.LayoutParams(0, dp(activity, 68), 0.75f) {{
+            rightMargin = dp(activity, 4);
+        }});
+
+        // 3. Правая кнопка мыши (ПКМ) — справа!
+        final Button btnRmb = createStyledButton(activity, "ПКМ\n(Правая)", 0xFF7C3AED, 0xFFA78BFA);
+        btnRmb.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f);
+        btnRmb.setMinHeight(dp(activity, 68));
+        btnRmb.setMinimumHeight(dp(activity, 68));
+        btnRmb.setOnTouchListener((v, event) -> {
+            XServer xs = activity.getXServer();
+            if (xs == null) return true;
+            if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
+                btnRmb.setBackground(roundedBg(0xFF059669, 0xFF34D399, 1, 8, activity));
+                xs.injectPointerButtonPress(Pointer.Button.BUTTON_RIGHT);
+            } else if (event.getActionMasked() == MotionEvent.ACTION_UP || event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
+                btnRmb.setBackground(roundedBg(0xFF7C3AED, 0xFFA78BFA, 1, 8, activity));
+                xs.injectPointerButtonRelease(Pointer.Button.BUTTON_RIGHT);
+            }
+            return true;
+        });
+        mouseButtonsRow.addView(btnRmb, new LinearLayout.LayoutParams(0, dp(activity, 68), 1.05f));
+
+        widget.addView(mouseButtonsRow);
+        rootView.addView(widget);
     }
 
     private static void setupLiveOverlayCustomizerPanel(
@@ -2469,7 +2840,8 @@ public class WinlatorProSuite {
 
     /**
      * Потокобезопасный монитор состояния Рабочего стола:
-     * использует XLock при обходе окон (исключает ConcurrentModificationException при открытии/закрытии окон!).
+     * выполняет проверку окон и ОЗУ в фоновом потоке через неблокирующий tryLock,
+     * чтобы главный UI-поток Android НИКОГДА не блокировался и не вызывал ANR!
      */
     private static void startLiveProcessAndFreezeWatchdog(
         final XServerDisplayActivity activity,
@@ -2486,24 +2858,34 @@ public class WinlatorProSuite {
                 if (activeWatchdogHandler != handler || activity == null || activity.isFinishing() || activity.isDestroyed()) {
                     return;
                 }
-                int mappedWindows = 0;
-                try {
-                    XServer xs = activity.getXServer();
-                    if (xs != null && xs.windowManager != null && xs.windowManager.rootWindow != null) {
-                        try (XLock lock = xs.lock(XServer.Lockable.WINDOW_MANAGER)) {
-                            for (Window w : xs.windowManager.rootWindow.getChildren()) {
-                                if (w != null && w.attributes.isMapped() && w.getWidth() > 32) {
-                                    mappedWindows++;
+                Executors.newSingleThreadExecutor().execute(() -> {
+                    if (activeWatchdogHandler != handler || activity.isFinishing() || activity.isDestroyed()) return;
+                    int mappedWindows = 0;
+                    try {
+                        XServer xs = activity.getXServer();
+                        if (xs != null && xs.windowManager != null && xs.windowManager.rootWindow != null) {
+                            XLock lock = xs.tryLock(5, XServer.Lockable.WINDOW_MANAGER);
+                            if (lock != null) {
+                                try (XLock ignored = lock) {
+                                    for (Window w : xs.windowManager.rootWindow.getChildren()) {
+                                        if (w != null && w.attributes.isMapped() && w.getWidth() > 32) {
+                                            mappedWindows++;
+                                        }
+                                    }
                                 }
                             }
                         }
-                    }
-                } catch (Throwable ignored) {}
+                    } catch (Throwable ignored) {}
 
-                MemoryStatus mem = queryMemoryStatus(activity);
-                long ramMb = mem.freeRamBytes / (1024L * 1024L);
-                tvWatchdog.setText("✥ 🛠️ " + targetExeName + " • ОЗУ " + ramMb + "МБ (Окон:" + mappedWindows + ")");
-                tvWatchdog.setTextColor(0xFF34D399);
+                    final int finalWindows = mappedWindows;
+                    final MemoryStatus mem = queryMemoryStatus(activity);
+                    final long ramMb = mem.freeRamBytes / (1024L * 1024L);
+                    handler.post(() -> {
+                        if (activeWatchdogHandler != handler || activity.isFinishing() || activity.isDestroyed()) return;
+                        tvWatchdog.setText("✥ 🛠️ " + targetExeName + " • ОЗУ " + ramMb + "МБ (Окон:" + finalWindows + ")");
+                        tvWatchdog.setTextColor(0xFF34D399);
+                    });
+                });
 
                 if (activeWatchdogHandler == handler) {
                     handler.postDelayed(this, 3000);

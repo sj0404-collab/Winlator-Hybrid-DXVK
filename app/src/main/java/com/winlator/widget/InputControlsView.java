@@ -59,6 +59,8 @@ public class InputControlsView extends View {
     private final Bitmap[] icons = new Bitmap[18];
     private Timer mouseMoveTimer;
     private final PointF mouseMoveOffset = new PointF();
+    private volatile Binding activeScrollBinding = Binding.NONE;
+    private int scrollTickCounter = 0;
     private boolean showTouchscreenControls = true;
 
     public InputControlsView(Context context) {
@@ -282,7 +284,24 @@ public class InputControlsView extends View {
             mouseMoveTimer.schedule(new TimerTask() {
                 @Override
                 public void run() {
-                    xServer.injectPointerMoveDelta((int)(mouseMoveOffset.x * 10 * cursorSpeed), (int)(mouseMoveOffset.y * 10 * cursorSpeed));
+                    if (xServer == null) return;
+                    if (mouseMoveOffset.x != 0 || mouseMoveOffset.y != 0) {
+                        xServer.injectPointerMoveDelta((int)(mouseMoveOffset.x * 10 * cursorSpeed), (int)(mouseMoveOffset.y * 10 * cursorSpeed));
+                    }
+                    Binding scrollBind = activeScrollBinding;
+                    if (scrollBind == Binding.MOUSE_SCROLL_UP || scrollBind == Binding.MOUSE_SCROLL_DOWN) {
+                        scrollTickCounter++;
+                        if (scrollTickCounter >= 6) {
+                            scrollTickCounter = 0;
+                            Pointer.Button btn = scrollBind.getPointerButton();
+                            if (btn != null) {
+                                xServer.injectPointerButtonPress(btn);
+                                xServer.injectPointerButtonRelease(btn);
+                            }
+                        }
+                    } else {
+                        scrollTickCounter = 0;
+                    }
                 }
             }, 0, 1000 / 60);
         }
@@ -377,6 +396,7 @@ public class InputControlsView extends View {
             int pointerId = event.getPointerId(actionIndex);
             int actionMasked = event.getActionMasked();
             boolean handled = false;
+            boolean dedicatedTrackpadActive = showTouchscreenControls && profile.hasTrackpad() && (touchpadView == null || !touchpadView.isMoveCursorToTouchpoint());
 
             switch (actionMasked) {
                 case MotionEvent.ACTION_DOWN:
@@ -388,7 +408,7 @@ public class InputControlsView extends View {
                     for (ControlElement element : profile.getElements()) {
                         if (element.handleTouchDown(pointerId, x, y)) handled = true;
                     }
-                    if (!handled) touchpadView.onTouchEvent(event);
+                    if (!handled && !dedicatedTrackpadActive) touchpadView.onTouchEvent(event);
                     break;
                 }
                 case MotionEvent.ACTION_MOVE: {
@@ -401,7 +421,7 @@ public class InputControlsView extends View {
                         for (ControlElement element : profile.getElements()) {
                             if (element.handleTouchMove(movePointerId, x, y)) handled = true;
                         }
-                        if (!handled) touchpadView.onTouchEvent(event);
+                        if (!handled && !dedicatedTrackpadActive) touchpadView.onTouchEvent(event);
                     }
                     break;
                 }
@@ -411,7 +431,7 @@ public class InputControlsView extends View {
                     float x = event.getX(actionIndex);
                     float y = event.getY(actionIndex);
                     for (ControlElement element : profile.getElements()) if (element.handleTouchUp(pointerId, x, y)) handled = true;
-                    if (!handled) touchpadView.onTouchEvent(event);
+                    if (!handled && !dedicatedTrackpadActive) touchpadView.onTouchEvent(event);
                     break;
                 }
             }
@@ -489,6 +509,20 @@ public class InputControlsView extends View {
             }
             else if (binding.keycode.isCustomKey()) {
                 if (!isActionDown) handleCommandKeyEvent(binding);
+            }
+            else if (binding == Binding.MOUSE_SCROLL_UP || binding == Binding.MOUSE_SCROLL_DOWN) {
+                Pointer.Button pointerButton = binding.getPointerButton();
+                if (isActionDown) {
+                    if (pointerButton != null && xServer != null) {
+                        xServer.injectPointerButtonPress(pointerButton);
+                        xServer.injectPointerButtonRelease(pointerButton);
+                    }
+                    activeScrollBinding = binding;
+                    scrollTickCounter = 0;
+                    createMouseMoveTimer();
+                } else {
+                    if (activeScrollBinding == binding) activeScrollBinding = Binding.NONE;
+                }
             }
             else {
                 Pointer.Button pointerButton = binding.getPointerButton();
