@@ -238,6 +238,12 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
             }
 
             this.graphicsDriver = GraphicsDrivers.parseIdentifiers(graphicsDriver);
+            if (this.graphicsDriver[1].equals(GraphicsDrivers.GLADIO)) {
+                this.graphicsDriver[1] = GraphicsDrivers.VIRGL;
+            }
+            if (this.graphicsDriver[0].equals(GraphicsDrivers.TURNIP) && !com.winlator.core.GPUHelper.isTurnipSupported(this)) {
+                this.graphicsDriver[0] = GraphicsDrivers.VORTEK;
+            }
             this.graphicsDriverConfig = GraphicsDrivers.parseConfigs(graphicsDriver, graphicsDriverConfig);
             this.dxwrapper = DXWrappers.parseIdentifier(dxwrapper);
             this.dxwrapperConfig = DXWrappers.parseConfigs(dxwrapper, dxwrapperConfig);
@@ -283,11 +289,21 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
 
         Executors.newSingleThreadExecutor().execute(() -> {
             if (!isGenerateWineprefix()) {
-                setupWineSystemFiles();
-                extractGraphicsDriverFiles();
-                changeWineAudioDriver();
+                try {
+                    setupWineSystemFiles();
+                } catch (Throwable ignored) {}
+                try {
+                    extractGraphicsDriverFiles();
+                } catch (Throwable ignored) {}
+                try {
+                    changeWineAudioDriver();
+                } catch (Throwable ignored) {}
             }
-            setupXEnvironment();
+            try {
+                setupXEnvironment();
+            } catch (Throwable e) {
+                preloaderDialog.closeOnUiThread();
+            }
         });
     }
 
@@ -512,7 +528,9 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
             envVars.put("WINEPATH", extraWinePath);
         }
         WineUtils.createDosdevicesSymlinks(container, true);
-        WinlatorProSuite.syncInstalledExeToDesktopWithIcons(this, container);
+        if (targetExecFile != null && targetExecFile.exists()) {
+            WinlatorProSuite.pinExecutableToDesktopWithIcon(this, container, targetExecFile);
+        }
 
         String startupSelection = String.valueOf(container.getStartupSelection());
         if (!startupSelection.equals(container.getExtra("startupSelection")) || wineprefixWasUpdated) {
@@ -587,14 +605,11 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
             environment.addComponent(pulseAudioComponent);
         }
 
-        if (graphicsDriver[0].equals(GraphicsDrivers.VORTEK)) {
-            VortekRendererComponent.Options options = VortekRendererComponent.Options.fromKeyValueSet(this, graphicsDriverConfig[0]);
-            VortekRendererComponent vortekRendererComponent = new VortekRendererComponent(xServer, UnixSocketConfig.create(rootPath, UnixSocketConfig.VORTEK_SERVER_PATH), options);
-            environment.addComponent(vortekRendererComponent);
-        }
-        if (graphicsDriver[1].equals(GraphicsDrivers.VIRGL)) {
-            environment.addComponent(new VirGLRendererComponent(xServer, UnixSocketConfig.create(rootPath, UnixSocketConfig.VIRGL_SERVER_PATH)));
-        }
+        VortekRendererComponent.Options vortekOptions = VortekRendererComponent.Options.fromKeyValueSet(this, graphicsDriverConfig[0]);
+        VortekRendererComponent vortekRendererComponent = new VortekRendererComponent(xServer, UnixSocketConfig.create(rootPath, UnixSocketConfig.VORTEK_SERVER_PATH), vortekOptions);
+        environment.addComponent(vortekRendererComponent);
+
+        environment.addComponent(new VirGLRendererComponent(xServer, UnixSocketConfig.create(rootPath, UnixSocketConfig.VIRGL_SERVER_PATH)));
 
         guestProgramLauncherComponent.setEnvVars(envVars);
         guestProgramLauncherComponent.setTerminationCallback((status) -> exit());
@@ -609,6 +624,19 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
             overrideEnvVars = null;
         }
         environment.startEnvironmentComponents();
+
+        new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
+            try {
+                if (!isFinishing() && !isDestroyed()) {
+                    if (xServerView != null && xServerView.getRenderer() != null) {
+                        xServerView.getRenderer().setCursorVisible(true);
+                    }
+                    if (preloaderDialog != null) {
+                        preloaderDialog.close();
+                    }
+                }
+            } catch (Throwable ignored) {}
+        }, 7000);
 
         winHandler.start();
         if (pendingExecCommand != null && !pendingExecCommand.isEmpty()) {
@@ -678,13 +706,17 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
         if (MainActivity.DEBUG_MODE) rootView.addView(AppUtils.createDebugMsgTextView(this));
         AppUtils.observeSoftKeyboardVisibility(drawerLayout, renderer::setScreenOffsetYRelativeToCursor);
 
+        String hudTargetName = getIntent().getStringExtra("exec_path");
+        if ((hudTargetName == null || hudTargetName.isEmpty()) && shortcut != null) {
+            hudTargetName = !shortcut.wmClass.isEmpty() ? shortcut.wmClass : shortcut.name;
+        }
         WinlatorProSuite.attachLiveDesktopHudAndOverlayCustomizer(
             this,
             rootView,
             inputControlsView,
             touchpadView,
             container,
-            getIntent().getStringExtra("exec_path")
+            hudTargetName
         );
     }
 
@@ -783,7 +815,7 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
     private void extractGraphicsDriverFiles() {
         envVars.put("vblank_mode", "0");
 
-        String cacheId = "";
+        String cacheId = "v12.3-";
         if (graphicsDriver[0].equals(GraphicsDrivers.TURNIP)) {
             cacheId += graphicsDriver[0]+"-"+graphicsDriverConfig[0].get("version", DefaultVersion.TURNIP);
         }
@@ -791,9 +823,10 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
         cacheId += "-"+graphicsDriver[1]+"-"+DefaultVersion.valueOf(graphicsDriver[1]);
 
         String currentGraphicsDriver = preferences.getString("current_graphics_driver", "");
-        boolean changed = !cacheId.equals(currentGraphicsDriver);
         File rootDir = rootFS.getRootDir();
         File libDir = rootFS.getLibDir();
+        boolean missingLibs = !new File(libDir, "libvulkan_vortek.so").isFile() || !new File(libDir, "libvulkan_freedreno.so").isFile();
+        boolean changed = !cacheId.equals(currentGraphicsDriver) || missingLibs;
 
         if (changed) {
             FileUtils.delete(new File(libDir, "libvulkan_freedreno.so"));
@@ -804,26 +837,27 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
             FileUtils.delete(vulkanICDDir);
             vulkanICDDir.mkdirs();
 
+            String version = graphicsDriverConfig[0].get("version", DefaultVersion.TURNIP);
+            GeneralComponents.extractFile(GeneralComponents.Type.TURNIP, this, version, DefaultVersion.TURNIP);
+            TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, this, "graphics_driver/vortek-" + DefaultVersion.VORTEK + ".tzst", rootDir);
+
             preferences.edit().putString("current_graphics_driver", cacheId).apply();
         }
 
-        if (graphicsDriver[0].equals(GraphicsDrivers.TURNIP)) {
+        if (graphicsDriver[0].equals(GraphicsDrivers.TURNIP) && com.winlator.core.GPUHelper.isTurnipSupported(this)) {
             TurnipConfigDialog.setEnvVars(this, graphicsDriverConfig[0], envVars);
-
-            if (changed) {
-                String version = graphicsDriverConfig[0].get("version", DefaultVersion.TURNIP);
-                GeneralComponents.extractFile(GeneralComponents.Type.TURNIP, this, version, DefaultVersion.TURNIP);
-            }
+            envVars.put("VK_ICD_FILENAMES", "/usr/share/vulkan/icd.d/freedreno_icd.aarch64.json:/usr/share/vulkan/icd.d/vortek_icd.aarch64.json");
         }
-        else if (graphicsDriver[0].equals(GraphicsDrivers.VORTEK) && (changed || MainActivity.DEBUG_MODE)) {
-            TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, this, "graphics_driver/vortek-" + DefaultVersion.VORTEK + ".tzst", rootDir);
+        else {
+            envVars.put("VK_ICD_FILENAMES", "/usr/share/vulkan/icd.d/vortek_icd.aarch64.json:/usr/share/vulkan/icd.d/freedreno_icd.aarch64.json");
         }
 
         switch (graphicsDriver[1]) {
             case GraphicsDrivers.ZINK:
                 envVars.put("GALLIUM_DRIVER", "zink");
                 envVars.put("ZINK_CONTEXT_THREADED", "1");
-                if (graphicsDriver[0].equals(GraphicsDrivers.VORTEK)) envVars.put("MESA_GL_VERSION_OVERRIDE", "3.3");
+                envVars.put("MESA_GL_VERSION_OVERRIDE", "4.3");
+                envVars.put("MESA_GLSL_VERSION_OVERRIDE", "430");
 
                 if (changed) TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, this, "graphics_driver/zink-"+DefaultVersion.ZINK+".tzst", rootDir);
                 break;
@@ -836,9 +870,12 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
                 if (changed) TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, this, "graphics_driver/virgl-"+DefaultVersion.VIRGL+".tzst", rootDir);
                 break;
             case GraphicsDrivers.GLADIO:
-                envVars.put("GLADIO_NO_ERROR", "1");
+                envVars.put("GALLIUM_DRIVER", "virpipe");
+                envVars.put("VIRGL_NO_READBACK", "true");
+                envVars.put("VIRGL_SERVER_PATH", rootDir+UnixSocketConfig.VIRGL_SERVER_PATH);
+                VirGLConfigDialog.setEnvVars(graphicsDriverConfig[1], envVars);
 
-                if (changed || MainActivity.DEBUG_MODE) TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, this, "graphics_driver/gladio-"+DefaultVersion.GLADIO+".tzst", rootDir);
+                if (changed || MainActivity.DEBUG_MODE) TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, this, "graphics_driver/virgl-"+DefaultVersion.VIRGL+".tzst", rootDir);
                 break;
         }
     }
@@ -867,28 +904,38 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
     }
 
     private boolean extractDXWrapperFiles() {
-        String cacheId = "";
+        WineD3DConfigDialog.setEnvVars(dxwrapperConfig[0], envVars);
+        String cacheId = "v12.3-";
+        String requestedDxvkVer = dxwrapperConfig[0].get("version", DefaultVersion.DXVK(graphicsDriver[0]));
+        if (requestedDxvkVer.isEmpty() || requestedDxvkVer.equals("1.7.2+2.4.1") || requestedDxvkVer.equals("hybrid")) {
+            requestedDxvkVer = DefaultVersion.HYBRID_DXVK;
+            dxwrapperConfig[0].put("version", requestedDxvkVer);
+        }
+
         if (dxwrapper.equals(DXWrappers.DXVK)) {
             DXVKConfigDialog.setEnvVars(this, dxwrapperConfig[0], envVars);
-            cacheId += dxwrapper+"-"+dxwrapperConfig[0].get("version", DefaultVersion.DXVK(graphicsDriver[0]));
+            envVars.put("WINEDLLOVERRIDES", "mscoree,mshtml=d;d3d11,dxgi,d3d10core,d3d10,d3d10_1,d3d9,d3d8,d3dcompiler_47,d3dcompiler_46,d3dcompiler_43=n,b");
+            cacheId += dxwrapper+"-"+requestedDxvkVer;
         }
         else if (dxwrapper.equals(DXWrappers.WINED3D)) {
-            WineD3DConfigDialog.setEnvVars(dxwrapperConfig[0], envVars);
+            envVars.put("WINEDLLOVERRIDES", "mscoree,mshtml=d;d3d11,dxgi,d3d10core,d3d10,d3d10_1,d3d9,d3d8,wined3d=b,n;d3dcompiler_47,d3dcompiler_46,d3dcompiler_43=n,b");
             cacheId += dxwrapper+"-"+dxwrapperConfig[0].get("version", DefaultVersion.WINED3D);
         }
 
+        File rootDir = rootFS.getRootDir();
+        File windowsDir = new File(rootDir, RootFS.WINEPREFIX+"/drive_c/windows");
+        File sys32D3d11 = new File(windowsDir, "system32/d3d11.dll");
+        boolean missingDxvkDll = dxwrapper.equals(DXWrappers.DXVK) && (!sys32D3d11.isFile() || sys32D3d11.length() < 1000000L);
+
         String ddrawWrapper = dxwrapperConfig[0].get("ddrawWrapper", DXWrappers.WINED3D);
         cacheId += "-"+DXWrappers.VKD3D+"-"+dxwrapperConfig[1].get("version", DefaultVersion.VKD3D)+"-"+ddrawWrapper;
-        boolean changed = !cacheId.equals(container.getExtra("dxwrapper"));
+        boolean changed = !cacheId.equals(container.getExtra("dxwrapper")) || missingDxvkDll;
         VKD3DConfigDialog.setEnvVars(dxwrapperConfig[1], envVars);
 
         if (ddrawWrapper.equals(DXWrappers.CNC_DDRAW)) envVars.put("CNC_DDRAW_CONFIG_FILE", "C:\\ProgramData\\cnc-ddraw\\ddraw.ini");
 
         if (!changed) return false;
         container.putExtra("dxwrapper", cacheId);
-
-        File rootDir = rootFS.getRootDir();
-        File windowsDir = new File(rootDir, RootFS.WINEPREFIX+"/drive_c/windows");
 
         if (dxwrapper.equals(DXWrappers.WINED3D)) {
             String version = dxwrapperConfig[0].get("version", DefaultVersion.WINED3D);
@@ -902,7 +949,7 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
             final boolean[] hasD3D8DllFile = {false};
             final boolean[] hasD3D10DllFile = {false};
 
-            GeneralComponents.extractFile(GeneralComponents.Type.DXVK, this, dxwrapperConfig[0].get("version"), DefaultVersion.DXVK(graphicsDriver[0]), (destination, size) -> {
+            GeneralComponents.extractFile(GeneralComponents.Type.DXVK, this, requestedDxvkVer, DefaultVersion.DXVK(graphicsDriver[0]), (destination, size) -> {
                 String name = destination.getName();
                 if (name.equals("d3d10.dll")) {
                     hasD3D10DllFile[0] = true;
@@ -1020,15 +1067,24 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
             execArgs = shortcut.getExtra("execArgs");
             execArgs = !execArgs.isEmpty() ? " "+execArgs : "";
 
-            if (shortcut.isLinkPath()) {
-                pendingExecCommand = "\""+shortcut.path+"\"";
-                pendingExecArgs = execArgs.trim();
-                String linkDir = FileUtils.getDirname(shortcut.path);
-                if (linkDir != null && !linkDir.isEmpty() && linkDir.contains(":")) {
-                    cmdArgs = "/dir " + StringUtils.escapeDOSPath(linkDir) + " \"wfm.exe\"";
+            Intent intent = getIntent();
+            if (intent != null && intent.hasExtra("exec_path")) {
+                String intentExec = intent.getStringExtra("exec_path");
+                if (intentExec != null && !intentExec.isEmpty()) {
+                    execPath = WineUtils.unixToDOSPath(intentExec, container);
                 }
             }
-            else execPath = shortcut.path;
+            if (execPath == null || execPath.isEmpty()) {
+                if (shortcut.isLinkPath()) {
+                    pendingExecCommand = "\""+shortcut.path+"\"";
+                    pendingExecArgs = execArgs.trim();
+                    String linkDir = FileUtils.getDirname(shortcut.path);
+                    if (linkDir != null && !linkDir.isEmpty() && linkDir.contains(":")) {
+                        cmdArgs = "/dir " + StringUtils.escapeDOSPath(linkDir) + " \"wfm.exe\"";
+                    }
+                }
+                else execPath = shortcut.path;
+            }
         }
         else {
             Intent intent = getIntent();
@@ -1053,34 +1109,36 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
         }
 
         if (execPath != null && !execPath.isEmpty() && !execPath.equals("\\")) {
-            String execDir = FileUtils.getDirname(execPath);
-            String filename = FileUtils.getName(execPath);
-            int dotIndex, spaceIndex;
-            if ((dotIndex = filename.lastIndexOf(".")) != -1 && (spaceIndex = filename.indexOf(" ", dotIndex)) != -1) {
-                execArgs = filename.substring(spaceIndex+1)+execArgs;
-                filename = filename.substring(0, spaceIndex);
-            }
-            if (execDir == null || execDir.isEmpty() || !execDir.contains(":")) {
-                execDir = "C:\\windows";
-            }
-            String fullTargetDos = execDir + (execDir.endsWith("\\") ? "" : "\\") + filename;
-            String lowerFile = filename.toLowerCase(java.util.Locale.ENGLISH);
-            if (lowerFile.endsWith(".msi")) {
-                pendingExecCommand = "C:\\windows\\system32\\msiexec.exe";
-                pendingExecArgs = "/i \"" + fullTargetDos + "\"" + execArgs;
-            } else if (lowerFile.endsWith(".bat") || lowerFile.endsWith(".cmd")) {
-                pendingExecCommand = "C:\\windows\\system32\\cmd.exe";
-                pendingExecArgs = "/c \"" + fullTargetDos + "\"" + execArgs;
-            } else {
-                pendingExecCommand = "\"" + fullTargetDos + "\"";
-                pendingExecArgs = execArgs.trim();
-            }
-            // Запускаем wfm.exe с рабочей директорией самой игры (execDir), чтобы Рабочий стол Windows
-            // не закрывался и не вылетал при выходе из игры или установщика внутри Рабочего стола!
-            cmdArgs = "/dir "+StringUtils.escapeDOSPath(execDir)+" \"wfm.exe\"";
+            try {
+                String execDir = FileUtils.getDirname(execPath);
+                String filename = FileUtils.getName(execPath);
+                int dotIndex, spaceIndex;
+                if ((dotIndex = filename.lastIndexOf(".")) != -1 && (spaceIndex = filename.indexOf(" ", dotIndex)) != -1) {
+                    execArgs = filename.substring(spaceIndex+1)+execArgs;
+                    filename = filename.substring(0, spaceIndex);
+                }
+                if (execDir == null || execDir.isEmpty() || !execDir.contains(":")) {
+                    execDir = "C:\\windows";
+                }
+                String fullTargetDos = execDir + (execDir.endsWith("\\") ? "" : "\\") + filename;
+                String lowerFile = filename.toLowerCase(java.util.Locale.ENGLISH);
+                if (lowerFile.endsWith(".msi")) {
+                    pendingExecCommand = "C:\\windows\\system32\\msiexec.exe";
+                    pendingExecArgs = "/i \"" + fullTargetDos + "\"" + execArgs;
+                } else if (lowerFile.endsWith(".bat") || lowerFile.endsWith(".cmd")) {
+                    pendingExecCommand = "C:\\windows\\system32\\cmd.exe";
+                    pendingExecArgs = "/c \"" + fullTargetDos + "\"" + execArgs;
+                } else {
+                    pendingExecCommand = "\"" + fullTargetDos + "\"";
+                    pendingExecArgs = execArgs.trim();
+                }
+                // Запускаем wfm.exe с рабочей директорией самой игры (execDir), чтобы Рабочий стол Windows
+                // не закрывался и не вылетал при выходе из игры или установщика внутри Рабочего стола!
+                cmdArgs = "/dir "+StringUtils.escapeDOSPath(execDir)+" \"C:\\windows\\wfm.exe\"";
+            } catch (Throwable ignored) {}
         }
 
-        if (cmdArgs.isEmpty()) cmdArgs = "/dir C:\\windows \"wfm.exe\"";
+        if (cmdArgs.isEmpty()) cmdArgs = "\"wfm.exe\"";
 
         if (overrideEnvVars != null && overrideEnvVars.has("EXTRA_EXEC_ARGS")) {
             cmdArgs += " "+overrideEnvVars.get("EXTRA_EXEC_ARGS");

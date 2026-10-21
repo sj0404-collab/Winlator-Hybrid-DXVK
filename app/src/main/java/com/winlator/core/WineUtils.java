@@ -91,11 +91,18 @@ public abstract class WineUtils {
             }
         }
 
-        final String[] direct3dLibs = {"d3d8", "d3d9", "d3d10", "d3d10_1", "d3d10core", "d3d11", "d3d12", "d3d12core", "ddraw", "dxgi", "wined3d"};
+        final String[] direct3dLibs = {"d3d8", "d3d9", "d3d10", "d3d10_1", "d3d10core", "d3d11", "d3d12", "d3d12core", "ddraw", "dxgi", "wined3d", "d3dcompiler_47", "d3dcompiler_46", "d3dcompiler_43", "d3dx9_43", "d3dx10_43", "d3dx11_42", "d3dx11_43"};
         final String dllOverridesKey = "Software\\Wine\\DllOverrides";
 
         try (WineRegistryEditor registryEditor = new WineRegistryEditor(userRegFile)) {
             for (String name : direct3dLibs) registryEditor.setStringValue(dllOverridesKey, name, "native,builtin");
+
+            registryEditor.setDwordValue("Software\\Wine\\Direct3D", "csmt", 3);
+            registryEditor.setStringValue("Software\\Wine\\Direct3D", "DirectDrawRenderer", "opengl");
+            registryEditor.setStringValue("Software\\Wine\\Direct3D", "OffscreenRenderingMode", "fbo");
+            registryEditor.setStringValue("Software\\Wine\\Direct3D", "shader_backend", "glsl");
+            registryEditor.setStringValue("Software\\Wine\\Direct3D", "VideoMemorySize", "4096");
+            registryEditor.setDwordValue("Software\\Wine\\Direct3D", "max_version_gl", 0x00040003);
 
             registryEditor.removeKey("Software\\Winlator\\WFM\\ContextMenu\\7-Zip");
             registryEditor.setStringValue("Software\\Winlator\\WFM\\ContextMenu\\7-Zip", "Open Archive", "Z:\\opt\\apps\\7-Zip\\7zFM.exe \"%FILE%\"");
@@ -123,10 +130,18 @@ public abstract class WineUtils {
         Iterator<String[]> oldWinComponentsIter = new KeyValueSet(container.getExtra("wincomponents", Container.FALLBACK_WINCOMPONENTS)).iterator();
 
         try (WineRegistryEditor registryEditor = new WineRegistryEditor(userRegFile)) {
+            registryEditor.setDwordValue("Software\\Wine\\Direct3D", "csmt", 3);
+            registryEditor.setStringValue("Software\\Wine\\Direct3D", "DirectDrawRenderer", "opengl");
+            registryEditor.setStringValue("Software\\Wine\\Direct3D", "OffscreenRenderingMode", "fbo");
+            registryEditor.setStringValue("Software\\Wine\\Direct3D", "shader_backend", "glsl");
+            registryEditor.setStringValue("Software\\Wine\\Direct3D", "VideoMemorySize", "4096");
+            registryEditor.setDwordValue("Software\\Wine\\Direct3D", "max_version_gl", 0x00040003);
+
             JSONObject wincomponentsJSONObject = new JSONObject(FileUtils.readString(context, "wincomponents/wincomponents.json"));
 
             for (String[] wincomponent : new KeyValueSet(wincomponents)) {
-                if (wincomponent[1].equals(oldWinComponentsIter.next()[1])) continue;
+                String oldVal = oldWinComponentsIter.hasNext() ? oldWinComponentsIter.next()[1] : "";
+                if (wincomponent[1].equals(oldVal)) continue;
                 String identifier = wincomponent[0];
                 boolean useNative = wincomponent[1].equals("1");
 

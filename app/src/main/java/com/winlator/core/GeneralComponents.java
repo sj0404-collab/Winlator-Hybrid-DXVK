@@ -209,6 +209,9 @@ public abstract class GeneralComponents {
     public static void extractFile(Type type, Context context, String identifier, String defaultVersion, TarCompressorUtils.OnExtractFileListener onExtractFileListener) {
         File destination = type.getDestination(context);
         if (identifier == null || identifier.isEmpty()) identifier = defaultVersion;
+        if (type == Type.DXVK && (identifier.equals("1.7.2+2.4.1") || identifier.equalsIgnoreCase("hybrid"))) {
+            identifier = DefaultVersion.HYBRID_DXVK;
+        }
 
         if (isBuiltinComponent(type, identifier)) {
             String sourcePath = type.assetFolder()+"/"+type.lowerName()+"-"+identifier+".tzst";

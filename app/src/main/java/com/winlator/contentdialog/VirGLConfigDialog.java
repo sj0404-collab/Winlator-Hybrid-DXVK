@@ -48,6 +48,11 @@ public class VirGLConfigDialog extends ContentDialog {
         }
 
         if (!mesaExtensionOverride.isEmpty()) envVars.put("MESA_EXTENSION_OVERRIDE", mesaExtensionOverride);
-        envVars.put("MESA_GL_VERSION_OVERRIDE", config.get("glVersion", DEFAULT_GL_VERSION));
+        String glVer = config.get("glVersion", DEFAULT_GL_VERSION);
+        if (glVer.equals("3.1") || glVer.equals("3.2") || glVer.equals("3.3")) {
+            glVer = "4.3";
+        }
+        envVars.put("MESA_GL_VERSION_OVERRIDE", glVer);
+        envVars.put("MESA_GLSL_VERSION_OVERRIDE", "430");
     }
 }

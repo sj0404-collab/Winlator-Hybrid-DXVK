@@ -36,6 +36,7 @@ public class Shortcut {
         }
         else {
             String execArgs = "";
+            String desktopWorkingDir = "";
             Bitmap icon = null;
             File iconFile = null;
             String wmClass = "";
@@ -45,7 +46,7 @@ public class Shortcut {
             int index;
             for (String line : FileUtils.readLines(file, true)) {
                 if (line.startsWith("#")) continue;
-                if (line.startsWith("[")) {
+                if (line.startsWith("[") && line.contains("]")) {
                     section = line.substring(1, line.indexOf("]"));
                 }
                 else {
@@ -56,6 +57,7 @@ public class Shortcut {
 
                     if (section.equals("Desktop Entry")) {
                         if (key.equals("Exec")) execArgs = value;
+                        if (key.equals("Path")) desktopWorkingDir = StringUtils.unescapeDOSPath(value);
                         if (key.equals("Icon")) {
                             for (short iconSize : iconSizes) {
                                 iconFile = new File(container.getIconsDir(iconSize), value+".png");
@@ -81,12 +83,36 @@ public class Shortcut {
             this.iconFile = iconFile;
             this.wmClass = wmClass;
 
-            String path = !execArgs.isEmpty() && execArgs.contains("wine ") ? StringUtils.unescapeDOSPath(execArgs.substring(execArgs.lastIndexOf("wine ") + 5)) : "";
-            index = path.indexOf("start.exe ");
-            if (index != -1) path = path.substring(index+10);
-            path = path.trim();
-            while (path.startsWith("\"") && path.endsWith("\"") && path.length() >= 2) {
-                path = path.substring(1, path.length() - 1).trim();
+            String path = getExtra("execDosPath", "");
+            if (path.isEmpty()) {
+                String extraUnix = getExtra("execUnixPath", "");
+                if (!extraUnix.isEmpty() && new File(extraUnix).exists()) {
+                    path = WineUtils.unixToDOSPath(extraUnix, container);
+                }
+            }
+            if (path.isEmpty()) {
+                path = !execArgs.isEmpty() && execArgs.contains("wine ") ? StringUtils.unescapeDOSPath(execArgs.substring(execArgs.lastIndexOf("wine ") + 5)) : "";
+                index = path.indexOf("start.exe ");
+                if (index != -1) path = path.substring(index+10);
+                path = path.trim();
+                while (path.startsWith("\"") && path.endsWith("\"") && path.length() >= 2) {
+                    path = path.substring(1, path.length() - 1).trim();
+                }
+            }
+
+            // Если путь повреждён (нет обратных слэшей '\') или файл не найден — восстанавливаем из .lnk или Path + StartupWMClass
+            if (path.isEmpty() || !path.contains("\\")) {
+                File siblingLnk = new File(file.getParentFile(), this.name + ".lnk");
+                if (siblingLnk.isFile()) {
+                    com.winlator.win32.MSLink.LinkInfo linkInfo = com.winlator.win32.MSLink.extractLinkInfo(siblingLnk);
+                    if (linkInfo != null && linkInfo.targetPath != null && linkInfo.targetPath.contains("\\")) {
+                        path = linkInfo.targetPath;
+                    }
+                }
+                if ((path.isEmpty() || !path.contains("\\")) && !desktopWorkingDir.isEmpty() && !wmClass.isEmpty()) {
+                    String cleanDir = StringUtils.removeEndSlash(desktopWorkingDir);
+                    path = cleanDir + "\\" + wmClass;
+                }
             }
 
             this.path = path;

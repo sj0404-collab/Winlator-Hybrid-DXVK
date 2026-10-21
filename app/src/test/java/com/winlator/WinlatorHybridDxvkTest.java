@@ -142,4 +142,39 @@ public class WinlatorHybridDxvkTest {
         assertEquals("G:\\Games\\Souldiers\\Souldiers.exe", parsed.targetPath);
         assertEquals("G:\\Games\\Souldiers", parsed.workingDir);
     }
+
+    @Test
+    public void testShortcutDosPathEscapingAndDirnameSafety() {
+        // 1. unescapeDOSPath must preserve single backslashes and strip outer quotes
+        String quotedSingleSlash = "\"G:\\Games\\Souldiers\\Souldiers.exe\"";
+        assertEquals("G:\\Games\\Souldiers\\Souldiers.exe", com.winlator.core.StringUtils.unescapeDOSPath(quotedSingleSlash));
+
+        // 2. escapeDOSPath + unescapeDOSPath roundtrip with spaces
+        String withSpaces = "D:\\GOG Games\\Souldiers\\Souldiers.exe";
+        String escaped = com.winlator.core.StringUtils.escapeDOSPath(withSpaces);
+        assertEquals(withSpaces, com.winlator.core.StringUtils.unescapeDOSPath(escaped));
+
+        // 3. FileUtils.getDirname must never throw StringIndexOutOfBoundsException when no slash is present
+        assertEquals("G:\\Games\\Souldiers", com.winlator.core.FileUtils.getDirname("G:\\Games\\Souldiers\\Souldiers.exe"));
+        assertEquals("C:", com.winlator.core.FileUtils.getDirname("C:Souldiers.exe"));
+        assertEquals("", com.winlator.core.FileUtils.getDirname("Souldiers.exe"));
+        assertEquals("", com.winlator.core.FileUtils.getDirname(""));
+        assertEquals("", com.winlator.core.FileUtils.getDirname(null));
+
+        // 4. GraphicsDrivers default OpenGL driver must be VIRGL (Mesa OpenGL 4.3), not GLADIO (OpenGL 2.1)
+        assertEquals(com.winlator.container.GraphicsDrivers.VIRGL, com.winlator.container.GraphicsDrivers.DEFAULT_OPENGL_DRIVER);
+        String[] parsedDrivers = com.winlator.container.GraphicsDrivers.parseIdentifiers("vortek");
+        assertEquals(com.winlator.container.GraphicsDrivers.VORTEK, parsedDrivers[0]);
+        assertEquals(com.winlator.container.GraphicsDrivers.VIRGL, parsedDrivers[1]);
+
+        // 5. Verify native direct3d.tzst (d3dcompiler_47.dll) and hybrid DXVK archive sizes
+        File assetsDir = new File("src/main/assets");
+        if (!assetsDir.isDirectory()) {
+            assetsDir = new File("app/src/main/assets");
+        }
+        File direct3dTzst = new File(assetsDir, "wincomponents/direct3d.tzst");
+        assertTrue("direct3d.tzst must exist and contain native DirectX compilers", direct3dTzst.isFile() && direct3dTzst.length() > 15_000_000L);
+        File hybridDxvk = new File(assetsDir, "dxwrapper/dxvk-1.7.2-2.4.1-hybrid.tzst");
+        assertTrue("rebuilt dxvk-1.7.2-2.4.1-hybrid.tzst must be > 5 MB", hybridDxvk.isFile() && hybridDxvk.length() > 5_000_000L);
+    }
 }

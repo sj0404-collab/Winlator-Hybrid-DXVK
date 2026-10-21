@@ -232,10 +232,37 @@ public class ShortcutsFragment extends BaseFileManagerFragment<Shortcut> {
                 actionBar.setTitle(shortcut.name);
             }
             else {
-                Intent intent = new Intent(activity, XServerDisplayActivity.class);
-                intent.putExtra("container_id", shortcut.container.id);
-                intent.putExtra("shortcut_path", shortcut.file.getPath());
-                activity.startActivity(intent);
+                java.util.concurrent.Executors.newSingleThreadExecutor().execute(() -> {
+                    String unixPath = shortcut.getExtra("execUnixPath", "");
+                    if ((unixPath.isEmpty() || !new File(unixPath).exists()) && shortcut.path != null && !shortcut.path.isEmpty()) {
+                        unixPath = com.winlator.core.WineUtils.dosToUnixPath(shortcut.path, shortcut.container);
+                    }
+                    if ((unixPath == null || unixPath.isEmpty() || !new File(unixPath).exists()) && shortcut.wmClass != null && !shortcut.wmClass.isEmpty()) {
+                        File found = com.winlator.core.FileUtils.findExistingFileOnStorage(shortcut.wmClass, -1);
+                        if (found != null) unixPath = found.getAbsolutePath();
+                    }
+
+                    File exeFile = (unixPath != null && !unixPath.isEmpty()) ? new File(unixPath) : null;
+                    if (exeFile != null && exeFile.exists()) {
+                        exeFile = WinlatorProSuite.resolveFullFolderExeIfOrphan(exeFile);
+                        WinlatorProSuite.prepareGameFolderAndDependencies(activity, shortcut.container, exeFile);
+                        WinlatorProSuite.pinExecutableToDesktopWithIcon(activity, shortcut.container, exeFile);
+                    } else {
+                        WinlatorProSuite.prepareGameFolderAndDependencies(activity, shortcut.container, null);
+                    }
+
+                    final String finalExecPath = (exeFile != null && exeFile.exists()) ? exeFile.getAbsolutePath() : null;
+                    activity.runOnUiThread(() -> {
+                        Intent intent = new Intent(activity, XServerDisplayActivity.class);
+                        intent.putExtra("container_id", shortcut.container.id);
+                        intent.putExtra("shortcut_path", shortcut.file.getPath());
+                        intent.putExtra("always_show_desktop", true);
+                        if (finalExecPath != null) {
+                            intent.putExtra("exec_path", finalExecPath);
+                        }
+                        activity.startActivity(intent);
+                    });
+                });
             }
         }
     }

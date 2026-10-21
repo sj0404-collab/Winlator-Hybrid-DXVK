@@ -465,7 +465,6 @@ public class WinlatorProSuite {
                 pinExecutableToDesktopWithIcon(activity, container, f);
             } else {
                 prepareGameFolderAndDependencies(activity, container, null);
-                syncInstalledExeToDesktopWithIcons(activity, container);
             }
 
             final String finalExecPath = resolvedPath;
@@ -595,7 +594,22 @@ public class WinlatorProSuite {
             if (!sys32.isDirectory()) sys32.mkdirs();
             if (!syswow64.isDirectory()) syswow64.mkdirs();
 
-            // Ключевые библиотеки VC15 (VC++ 2015-2022), VC10-13 и DirectX 9/10/11
+            // 1. Сначала распаковываем настоящие нативные архивы DirectX 9/10/11 (direct3d.tzst с Microsoft d3dcompiler_47.dll, d3dx11_43.dll),
+            // DirectSound, DirectMusic, DirectPlay, VC++ 2010 и WMDecoder, чтобы они НЕ перекрывались встроенными заглушками Wine!
+            File marker = new File(container.getRootDir(), ".wine/.pro_dx_vc15_v123_ready");
+            File d3dComp64 = new File(sys32, "d3dcompiler_47.dll");
+            if (!marker.isFile() || !d3dComp64.isFile() || d3dComp64.length() < 2000000L) {
+                File winDir = new File(container.getRootDir(), ".wine/drive_c/windows");
+                TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, context, "wincomponents/direct3d.tzst", winDir);
+                TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, context, "wincomponents/directsound.tzst", winDir);
+                TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, context, "wincomponents/directmusic.tzst", winDir);
+                TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, context, "wincomponents/directplay.tzst", winDir);
+                TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, context, "wincomponents/vcrun2010.tzst", winDir);
+                TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, context, "wincomponents/wmdecoder.tzst", winDir);
+                FileUtils.writeString(marker, "1");
+            }
+
+            // 2. Докопируем недостающие библиотеки VC15 (VC++ 2015-2022), XInput и XAudio, не трогая уже распакованные нативные DLL
             final String[] criticalDlls = {
                 "vcruntime140.dll", "vcruntime140_1.dll",
                 "msvcp140.dll", "msvcp140_1.dll", "msvcp140_2.dll",
@@ -623,16 +637,6 @@ public class WinlatorProSuite {
                     File src32 = new File(wineX86, dll);
                     if (src32.isFile()) FileUtils.copy(src32, dst32);
                 }
-            }
-
-            // Распаковываем нативные vcrun2010 и direct3d если они ещё не распакованы
-            File marker = new File(container.getRootDir(), ".wine/.pro_dx_vc15_ready");
-            if (!marker.isFile()) {
-                File winDir = new File(container.getRootDir(), ".wine/drive_c/windows");
-                TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, context, "wincomponents/vcrun2010.tzst", winDir);
-                TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, context, "wincomponents/vcrun2005.tzst", winDir);
-                TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, context, "wincomponents/xaudio.tzst", winDir);
-                FileUtils.writeString(marker, "1");
             }
         } catch (Throwable ignored) {}
     }
@@ -773,7 +777,6 @@ public class WinlatorProSuite {
         if (container == null || rawExeFile == null || !rawExeFile.exists()) return false;
         try {
             File exeFile = resolveFullFolderExeIfOrphan(rawExeFile);
-            prepareGameFolderAndDependencies(context, container, exeFile);
 
             File desktopDir = new File(container.getUserDir(), "Desktop");
             if (!desktopDir.exists()) desktopDir.mkdirs();
@@ -1585,7 +1588,7 @@ public class WinlatorProSuite {
                     container.setDXWrapper("wined3d");
                 } else {
                     container.setDXWrapper("dxvk");
-                    String ver = (apiIdx == 1) ? "2.4.1" : (apiIdx == 2 ? "1.7.2" : "1.7.2+2.4.1");
+                    String ver = (apiIdx == 1) ? "2.4.1" : (apiIdx == 2 ? "1.7.2" : com.winlator.core.DefaultVersion.HYBRID_DXVK);
                     int fr = fpsLimitVal[0] >= 240 ? 0 : fpsLimitVal[0];
                     KeyValueSet cfg = new KeyValueSet(container.getDXWrapperConfig());
                     cfg.put("version", ver);

@@ -429,6 +429,7 @@ void checkDeviceProperties(VkContext* context, VkPhysicalDeviceProperties* prope
 }
 
 void checkDeviceFeatures(VkPhysicalDeviceFeatures* features, void* pNext) {
+    features->robustBufferAccess = VK_TRUE;
     features->textureCompressionBC = VK_TRUE;
     features->depthClamp = VK_TRUE;
     features->depthBiasClamp = VK_TRUE;
@@ -438,17 +439,30 @@ void checkDeviceFeatures(VkPhysicalDeviceFeatures* features, void* pNext) {
     features->shaderClipDistance = VK_TRUE;
     features->shaderCullDistance = VK_TRUE;
     features->occlusionQueryPrecise = VK_TRUE;
+    features->pipelineStatisticsQuery = VK_TRUE;
     features->independentBlend = VK_TRUE;
     features->multiViewport = VK_TRUE;
     features->fullDrawIndexUint32 = VK_TRUE;
     features->logicOp = VK_TRUE;
+    features->alphaToOne = VK_TRUE;
+    features->wideLines = VK_TRUE;
+    features->largePoints = VK_TRUE;
     features->shaderImageGatherExtended = VK_TRUE;
     features->variableMultisampleRate = VK_TRUE;
     features->dualSrcBlend = VK_TRUE;
     features->imageCubeArray = VK_TRUE;
     features->drawIndirectFirstInstance = VK_TRUE;
+    features->vertexPipelineStoresAndAtomics = VK_TRUE;
     features->fragmentStoresAndAtomics = VK_TRUE;
+    features->shaderStorageImageExtendedFormats = VK_TRUE;
+    features->shaderStorageImageReadWithoutFormat = VK_TRUE;
+    features->shaderStorageImageWriteWithoutFormat = VK_TRUE;
+    features->shaderUniformBufferArrayDynamicIndexing = VK_TRUE;
+    features->shaderSampledImageArrayDynamicIndexing = VK_TRUE;
+    features->shaderStorageBufferArrayDynamicIndexing = VK_TRUE;
+    features->shaderStorageImageArrayDynamicIndexing = VK_TRUE;
     features->multiDrawIndirect = VK_TRUE;
+    features->geometryShader = VK_TRUE;
     features->tessellationShader = VK_TRUE;
 
     VkPhysicalDeviceMapMemoryPlacedFeaturesEXT* mapMemoryPlacedFeatures = findNextVkStructure(pNext, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAP_MEMORY_PLACED_FEATURES_EXT);

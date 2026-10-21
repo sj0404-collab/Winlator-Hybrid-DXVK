@@ -30,11 +30,25 @@ public class StringUtils {
     }
 
     public static String escapeDOSPath(String path) {
+        if (path == null) return "";
         return path.replace("\\", "\\\\").replace(" ", "\\ ");
     }
 
     public static String unescapeDOSPath(String path) {
-        return path.replaceAll("\\\\([^\\\\]+)", "$1").replaceAll("\\\\([^\\\\]+)", "$1").replaceAll("\\\\\\\\", "\\\\").trim();
+        if (path == null) return "";
+        String res = path.trim();
+        if (res.startsWith("\"") && res.endsWith("\"") && res.length() >= 2) {
+            res = res.substring(1, res.length() - 1).trim();
+        }
+        res = res.replace("\\\\ ", " ")
+                 .replace("\\ ", " ")
+                 .replace("\\\\\\\\", "\\")
+                 .replace("\\\\", "\\")
+                 .trim();
+        if (res.startsWith("\"") && res.endsWith("\"") && res.length() >= 2) {
+            res = res.substring(1, res.length() - 1).trim();
+        }
+        return res;
     }
 
     public static String parseIdentifier(Object text) {

@@ -12,7 +12,7 @@ public abstract class GraphicsDrivers {
     public static final String VIRGL = "virgl";
     public static final String GLADIO = "gladio";
     public static final String DEFAULT_VULKAN_DRIVER = VORTEK;
-    public static final String DEFAULT_OPENGL_DRIVER = GLADIO;
+    public static final String DEFAULT_OPENGL_DRIVER = VIRGL;
 
     public static String getName(String identifier) {
         switch (identifier) {
@@ -79,6 +79,6 @@ public abstract class GraphicsDrivers {
     }
 
     public static String getDefaultDriver(Context context) {
-        return GPUHelper.getAdrenoModelId(context) > 0 ? GraphicsDrivers.TURNIP+","+GraphicsDrivers.DEFAULT_OPENGL_DRIVER : GraphicsDrivers.VORTEK+","+GraphicsDrivers.DEFAULT_OPENGL_DRIVER;
+        return GPUHelper.isTurnipSupported(context) ? GraphicsDrivers.TURNIP+","+GraphicsDrivers.ZINK : GraphicsDrivers.VORTEK+","+GraphicsDrivers.VIRGL;
     }
 }

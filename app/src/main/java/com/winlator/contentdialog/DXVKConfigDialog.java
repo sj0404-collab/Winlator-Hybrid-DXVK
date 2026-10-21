@@ -96,6 +96,9 @@ public class DXVKConfigDialog extends ContentDialog {
         if (!maxDeviceMemory.isEmpty() && !maxDeviceMemory.equals("0")) {
             content += "dxgi.maxDeviceMemory = "+maxDeviceMemory+"\n";
             content += "dxgi.maxSharedMemory = "+maxDeviceMemory+"\n";
+        } else {
+            content += "dxgi.maxDeviceMemory = 4096\n";
+            content += "dxgi.maxSharedMemory = 4096\n";
         }
 
         String framerate = config.get("framerate");
@@ -117,6 +120,9 @@ public class DXVKConfigDialog extends ContentDialog {
             content += "d3d9.customDeviceDesc = \""+parts[2]+"\"\n";
         }
 
+        content += "d3d11.maxFeatureLevel = 11_1\n";
+        content += "d3d11.relaxedBarriers = True\n";
+        content += "d3d11.ignoreGraphicsBarriers = True\n";
         content += "dxvk.enableAsync = True\n";
         content += "dxvk.gplAsyncCache = True\n";
         content += "d3d9.deferSurfaceCreation = True\n";

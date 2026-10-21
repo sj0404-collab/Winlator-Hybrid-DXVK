@@ -64,23 +64,36 @@ public abstract class GPUHelper {
             attribList = new int[]{EGL14.EGL_CONTEXT_CLIENT_VERSION, 2, EGL10.EGL_NONE};
             EGLContext eglContext = egl.eglCreateContext(eglDisplay, configs[0], EGL10.EGL_NO_CONTEXT, attribList);
 
-            egl.eglMakeCurrent(eglDisplay, EGL10.EGL_NO_SURFACE, EGL10.EGL_NO_SURFACE, eglContext);
+            int[] surfaceAttribs = new int[]{EGL10.EGL_WIDTH, 1, EGL10.EGL_HEIGHT, 1, EGL10.EGL_NONE};
+            javax.microedition.khronos.egl.EGLSurface eglSurface = egl.eglCreatePbufferSurface(eglDisplay, configs[0], surfaceAttribs);
+            if (eglSurface != null && eglSurface != EGL10.EGL_NO_SURFACE) {
+                egl.eglMakeCurrent(eglDisplay, eglSurface, eglSurface, eglContext);
+            } else {
+                egl.eglMakeCurrent(eglDisplay, EGL10.EGL_NO_SURFACE, EGL10.EGL_NO_SURFACE, eglContext);
+            }
 
             GL10 gl = (GL10)eglContext.getGL();
             String gpuRenderer = Objects.toString(gl.glGetString(GL10.GL_RENDERER), "");
             String gpuVendor = Objects.toString(gl.glGetString(GL10.GL_VENDOR), "");
             String gpuVersion = Objects.toString(gl.glGetString(GL10.GL_VERSION), "");
 
+            if (eglSurface != null && eglSurface != EGL10.EGL_NO_SURFACE) {
+                egl.eglDestroySurface(eglDisplay, eglSurface);
+            }
+            egl.eglDestroyContext(eglDisplay, eglContext);
+
             gpuInfo.put("renderer", gpuRenderer);
             gpuInfo.put("vendor", gpuVendor);
             gpuInfo.put("version", gpuVersion);
 
             final SharedPreferences preferences = PreferenceManager.getDefaultSharedPreferences(context);
-            preferences.edit()
-                .putString("gpu_renderer", gpuRenderer)
-                .putString("gpu_vendor", gpuVendor)
-                .putString("gpu_version", gpuVersion)
-                .apply();
+            if (!gpuRenderer.isEmpty()) {
+                preferences.edit()
+                    .putString("gpu_renderer", gpuRenderer)
+                    .putString("gpu_vendor", gpuVendor)
+                    .putString("gpu_version", gpuVersion)
+                    .apply();
+            }
 
             synchronized (thread) {
                 thread.notify();
@@ -89,7 +102,7 @@ public abstract class GPUHelper {
 
         synchronized (thread) {
             try {
-                thread.wait();
+                thread.wait(1500);
             }
             catch (InterruptedException e) {}
         }
@@ -126,6 +139,13 @@ public abstract class GPUHelper {
     public static short getAdrenoModelId(Context context) {
         Matcher matcher = Pattern.compile("adreno[^678]*([678][0-9]{2})", Pattern.CASE_INSENSITIVE).matcher(glGetRenderer(context));
         return (short)(matcher.find() ? Integer.parseInt(matcher.group(1)) : 0);
+    }
+
+    public static boolean isTurnipSupported(Context context) {
+        boolean hasKgsl = new java.io.File("/dev/kgsl-3d0").exists();
+        if (!hasKgsl) return false;
+        short modelId = getAdrenoModelId(context);
+        return modelId >= 600 && modelId < 800;
     }
 
     public static int vkMakeVersion(String value) {

@@ -254,9 +254,9 @@ public class ContainerManager {
             data.put("name", "Winlator x86_64 • Hybrid DXVK (1.7.2+2.4.1)");
             data.put("screenSize", Container.DEFAULT_SCREEN_SIZE);
             data.put("envVars", Container.DEFAULT_ENV_VARS + " DXVK_ASYNC=1 DXVK_GPLASYNCCACHE=1");
-            data.put("graphicsDriver", GraphicsDrivers.DEFAULT_VULKAN_DRIVER + "," + GraphicsDrivers.DEFAULT_OPENGL_DRIVER);
+            data.put("graphicsDriver", GraphicsDrivers.getDefaultDriver(context));
             data.put("dxwrapper", DXWrappers.DXVK);
-            data.put("dxwrapperConfig", "version=" + com.winlator.core.DefaultVersion.HYBRID_DXVK + ",framerate=0,maxDeviceMemory=4096");
+            data.put("dxwrapperConfig", "version=" + com.winlator.core.DefaultVersion.HYBRID_DXVK + ",framerate=0,maxDeviceMemory=4096|version=" + com.winlator.core.DefaultVersion.VKD3D);
             data.put("audioDriver", Container.DEFAULT_AUDIO_DRIVER);
             data.put("wincomponents", Container.DEFAULT_WINCOMPONENTS);
             data.put("drives", Container.DEFAULT_DRIVES + "F:" + extDiskF.getAbsolutePath());
