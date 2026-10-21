@@ -1,5 +1,7 @@
 package com.winlator.pro;
 
+import android.os.Build;
+import com.winlator.widget.FrameRating;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.text.TextUtils;
@@ -2094,6 +2096,32 @@ public class WinlatorProSuite {
         tvWatchdog.setPadding(dp(activity, 8), dp(activity, 4), dp(activity, 6), dp(activity, 4));
         statusLine.addView(tvWatchdog);
 
+        // v12.6.1: живой FPS и время кадра прямо в HUD (обновляется каждую секунду)
+        final TextView tvFps = new TextView(activity);
+        tvFps.setTextColor(UI_ACCENT);
+        tvFps.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f);
+        tvFps.setTypeface(Typeface.DEFAULT_BOLD);
+        tvFps.setSingleLine(true);
+        tvFps.setPadding(dp(activity, 2), dp(activity, 4), dp(activity, 6), dp(activity, 4));
+        tvFps.setVisibility(View.GONE);
+        statusLine.addView(tvFps);
+        final Handler fpsHandler = new Handler(Looper.getMainLooper());
+        fpsHandler.post(new Runnable() {
+            @Override
+            public void run() {
+                if (activity.isFinishing() || activity.isDestroyed()) return;
+                FrameRating fr = activity.getFrameRating();
+                float fps = fr != null ? fr.getLastFPS() : 0f;
+                if (fps >= 0.5f) {
+                    tvFps.setText(String.format(Locale.US, "%.0f FPS · %.0f мс", fps, 1000f / fps));
+                    tvFps.setVisibility(View.VISIBLE);
+                } else if (tvFps.getVisibility() != View.GONE) {
+                    tvFps.setVisibility(View.GONE);
+                }
+                fpsHandler.postDelayed(this, 1000);
+            }
+        });
+
         final Button btnQuickGamepad = hudButton(activity, "Геймпад");
         final Button btnCenterCursor = hudButton(activity, "Мышь");
         final Button btnCollapse = hudButton(activity, "☰");
@@ -2228,14 +2256,24 @@ public class WinlatorProSuite {
         final Button btnFpsTest = hudButton(activity, "FPS");
         btnFpsTest.setOnClickListener(v -> {
             wakeHud.run();
+            cycleFpsOverlay(activity, container);
+        });
+        btnFpsTest.setOnLongClickListener(v -> {
+            wakeHud.run();
             showFpsBenchmarkDialog(activity, container);
+            return true;
+        });
+        final Button btnStorage = hudButton(activity, "Место");
+        btnStorage.setOnClickListener(v -> {
+            wakeHud.run();
+            showStorageDialog(activity, container);
         });
         final Button btnTasks = hudButton(activity, "Задачи");
         btnTasks.setOnClickListener(v -> {
             wakeHud.run();
             (new TaskManagerDialog(activity)).show();
         });
-        for (Button ab : new Button[]{btnDesktopLauncher, btnGfxStudio, btnControls, btnFpsTest, btnTasks}) {
+        for (Button ab : new Button[]{btnDesktopLauncher, btnGfxStudio, btnControls, btnFpsTest, btnStorage, btnTasks}) {
             LinearLayout.LayoutParams alp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(activity, 28));
             alp.rightMargin = dp(activity, 4);
             actionsRow.addView(ab, alp);
@@ -2364,6 +2402,218 @@ public class WinlatorProSuite {
             .show();
     }
 
+    // ===================== v12.6.1: Unity, тихие вылеты, FPS, место на диске =====================
+    private static volatile boolean gameWindowSeen = false;
+    private static volatile int gameMissingTicks = 0;
+
+    /** Игра на Unity: рядом с .exe лежит UnityPlayer.dll или папка <Имя>_Data. */
+    public static boolean isUnityGame(File exe) {
+        try {
+            if (exe == null) return false;
+            File dir = exe.getParentFile();
+            if (dir == null || !dir.isDirectory()) return false;
+            if (new File(dir, "UnityPlayer.dll").isFile()) return true;
+            String base = FileUtils.getBasename(exe.getName());
+            return base != null && !base.isEmpty() && new File(dir, base + "_Data").isDirectory();
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** Ключ для поиска окна игры по WM_CLASS (Wine пишет туда имя .exe в нижнем регистре). */
+    private static String gameWindowKey(String targetExeName) {
+        if (targetExeName == null) return "";
+        String n = targetExeName.trim().toLowerCase(Locale.ROOT);
+        int slash = Math.max(n.lastIndexOf('/'), n.lastIndexOf('\\'));
+        if (slash >= 0) n = n.substring(slash + 1);
+        if (n.endsWith(".exe")) n = n.substring(0, n.length() - 4);
+        if (n.equals("рабочий стол") || n.equals("explorer") || n.equals("wfm") || n.length() < 3) return "";
+        return n;
+    }
+
+    private static String buildReportHeader(XServerDisplayActivity activity, Container container, String gameName) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("Игра: ").append(gameName != null ? gameName : "?").append('\n');
+        try {
+            sb.append("Unity: ").append(activity != null && activity.unityLaunch ? "да (режим совместимости Box64 включён)" : "нет/не определено").append('\n');
+            if (container != null) {
+                sb.append("DX-обёртка: ").append(container.getDXWrapper()).append(" • Box64 пресет контейнера: ").append(container.getBox64Preset()).append('\n');
+            }
+            sb.append("Устройство: ").append(Build.MANUFACTURER).append(' ').append(Build.MODEL).append(" • Android ").append(Build.VERSION.RELEASE).append('\n');
+        } catch (Throwable ignored) {}
+        sb.append('\n');
+        return sb.toString();
+    }
+
+    private static File findNewestUnityErrorLog(Container container) {
+        File newest = null;
+        try {
+            File driveC = container != null ? new File(container.getRootDir(), ".wine/drive_c") : null;
+            for (File user : listDirs(driveC != null ? new File(driveC, "users") : null)) {
+                for (File company : listDirs(new File(user, "AppData/Local/Temp"))) {
+                    for (File product : listDirs(company)) {
+                        for (File crash : listDirs(new File(product, "Crashes"))) {
+                            File err = new File(crash, "error.log");
+                            if (err.isFile() && (newest == null || err.lastModified() > newest.lastModified())) newest = err;
+                        }
+                    }
+                }
+            }
+        } catch (Throwable ignored) {}
+        return newest;
+    }
+
+    private static boolean looksLikeCrash(String report) {
+        String low = report.toLowerCase(Locale.ROOT);
+        String[] markers = {"crash!!!", "received signal", "access violation", "fatal error", "native crash",
+            "unhandled exception", "outputting stack trace", "sigsegv", "caught fatal signal", "abnormal program termination"};
+        for (String m : markers) if (low.contains(m)) return true;
+        return false;
+    }
+
+    /** Окно игры исчезло: если в логах есть признаки вылета — показываем причину, иначе короткое уведомление. */
+    private static void onGameWindowClosed(final XServerDisplayActivity activity, final Container container, final String gameName) {
+        if (unityCrashShown || activity == null) return;
+        final long closedAt = System.currentTimeMillis();
+        Executors.newSingleThreadExecutor().execute(() -> {
+            String body = collectUnityCrashReport(container);
+            File err = findNewestUnityErrorLog(container);
+            boolean freshCrashFolder = err != null && closedAt - err.lastModified() < 5 * 60_000L;
+            final boolean crashed = freshCrashFolder || looksLikeCrash(body);
+            final String report = buildReportHeader(activity, container, gameName) + body;
+            final File saved = saveReportToDownloads(gameName, report);
+            new Handler(Looper.getMainLooper()).post(() -> {
+                if (activity.isFinishing() || activity.isDestroyed()) return;
+                if (crashed) {
+                    showUnityCrashDialog(activity, report + (saved != null ? "\nЛог сохранён: " + saved.getAbsolutePath() + "\n" : ""));
+                } else {
+                    AppUtils.showToast(activity, "Игра закрыта" + (saved != null ? " • лог: Загрузки/Winlator-logs" : ""));
+                }
+            });
+        });
+    }
+
+    private static File saveReportToDownloads(String gameName, String report) {
+        try {
+            File dir = new File(Environment.getExternalStorageDirectory(), "Download/Winlator-logs");
+            if (!dir.isDirectory() && !dir.mkdirs()) return null;
+            String safe = (gameName == null || gameName.trim().isEmpty() ? "game" : gameName.trim()).replaceAll("[^A-Za-z0-9._-]+", "_");
+            String stamp = new java.text.SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new java.util.Date());
+            File out = new File(dir, safe + "_" + stamp + ".txt");
+            try (FileOutputStream fos = new FileOutputStream(out)) {
+                fos.write(report.getBytes(StandardCharsets.UTF_8));
+            }
+            return out;
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /** Кнопка FPS: выкл → простой (FPS) → подробный (FPS, ОЗУ, CPU, GPU) → выкл. FPS в HUD виден всегда. */
+    private static void cycleFpsOverlay(XServerDisplayActivity activity, Container container) {
+        FrameRating fr = activity.getFrameRating();
+        if (fr == null) return;
+        String msg;
+        byte mode;
+        if (!fr.isShowOverlay()) {
+            fr.setMode(FrameRating.Mode.SIMPLE);
+            fr.setShowOverlay(true);
+            mode = (byte) FrameRating.Mode.SIMPLE.ordinal();
+            msg = "Оверлей FPS: простой";
+        } else if (fr.getMode() == FrameRating.Mode.SIMPLE) {
+            fr.setMode(FrameRating.Mode.FULL);
+            mode = (byte) FrameRating.Mode.FULL.ordinal();
+            msg = "Оверлей FPS: подробный (FPS, ОЗУ, CPU, GPU)";
+        } else {
+            fr.setShowOverlay(false);
+            mode = (byte) FrameRating.Mode.DISABLED.ordinal();
+            msg = "Оверлей FPS выключен (FPS остаётся в HUD)";
+        }
+        try {
+            if (container != null) {
+                container.setHUDMode(mode);
+                container.saveData();
+            }
+        } catch (Throwable ignored) {}
+        AppUtils.showToast(activity, msg);
+    }
+
+    private static long dirSize(File root) {
+        long total = 0;
+        if (root == null || !root.exists()) return 0;
+        java.util.ArrayDeque<File> stack = new java.util.ArrayDeque<>();
+        stack.push(root);
+        while (!stack.isEmpty()) {
+            File f = stack.pop();
+            try {
+                if (FileUtils.isSymlink(f)) continue;
+                if (f.isDirectory()) {
+                    File[] kids = f.listFiles();
+                    if (kids != null) for (File k : kids) stack.push(k);
+                } else {
+                    total += f.length();
+                }
+            } catch (Throwable ignored) {}
+        }
+        return total;
+    }
+
+    /** «Место на диске C»: что занимает контейнер + очистка кэша шейдеров. Игры не копируются — читаются на месте. */
+    public static void showStorageDialog(final Activity activity, final Container container) {
+        if (activity == null || container == null) return;
+        final AlertDialog dlg = new AlertDialog.Builder(activity)
+            .setTitle("Место на диске C")
+            .setMessage("Считаю размеры…")
+            .setPositiveButton("Очистить кэш шейдеров", null)
+            .setNegativeButton("Закрыть", null)
+            .create();
+        dlg.show();
+        final File root = container.getRootDir();
+        Executors.newSingleThreadExecutor().execute(() -> {
+            File driveC = new File(root, ".wine/drive_c");
+            long total = dirSize(root);
+            long windows = dirSize(new File(driveC, "windows"));
+            long cache = dirSize(new File(root, ".cache"));
+            long users = dirSize(new File(driveC, "users"));
+            long progs = dirSize(new File(driveC, "Program Files")) + dirSize(new File(driveC, "Program Files (x86)"));
+            long games = dirSize(new File(driveC, "Games"));
+            long uri = dirSize(new File(activity.getCacheDir(), "uri_imports"));
+            final String msg = "Всего в контейнере: " + StringUtils.formatBytes(total) + "\n\n"
+                + "• Windows (система, DirectX, VC++): " + StringUtils.formatBytes(windows) + "\n"
+                + "• Кэш шейдеров Mesa/DXVK: " + StringUtils.formatBytes(cache) + " (лимит 256 МБ)\n"
+                + "• Профили и сохранения (users): " + StringUtils.formatBytes(users) + "\n"
+                + "• Program Files: " + StringUtils.formatBytes(progs) + "\n"
+                + "• C:\\Games (то, что копировали сами): " + StringUtils.formatBytes(games) + "\n"
+                + "• Временные копии файлов: " + StringUtils.formatBytes(uri) + "\n\n"
+                + "Игры из памяти телефона на диск C не копируются: они читаются на месте через диски "
+                + "D: (Загрузки), G: (вся память) и H: (SD-карта). Диск C растёт из-за кэша шейдеров и библиотек DirectX.";
+            new Handler(Looper.getMainLooper()).post(() -> {
+                if (!dlg.isShowing()) return;
+                dlg.setMessage(msg);
+                dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(b -> {
+                    dlg.setMessage("Очищаю кэш…");
+                    Executors.newSingleThreadExecutor().execute(() -> {
+                        long before = dirSize(new File(root, ".cache")) + dirSize(new File(activity.getCacheDir(), "uri_imports"));
+                        File[] caches = new File(root, ".cache").listFiles();
+                        if (caches != null) {
+                            for (File c : caches) {
+                                String n = c.getName().toLowerCase(Locale.ROOT);
+                                if (n.contains("mesa") || n.contains("dxvk") || n.contains("vkd3d") || n.endsWith(".dxvk-cache")) FileUtils.delete(c);
+                            }
+                        }
+                        FileUtils.delete(new File(activity.getCacheDir(), "uri_imports"));
+                        long after = dirSize(new File(root, ".cache")) + dirSize(new File(activity.getCacheDir(), "uri_imports"));
+                        final long freed = Math.max(0, before - after);
+                        new Handler(Looper.getMainLooper()).post(() -> {
+                            AppUtils.showToast(activity, "Освобождено: " + StringUtils.formatBytes(freed));
+                            if (dlg.isShowing()) dlg.dismiss();
+                        });
+                    });
+                });
+            });
+        });
+    }
+
     public static void ensureRichControlPresetsInstalled(Context context) {
         try {
             File profilesDir = InputControlsManager.getProfilesDir(context);
@@ -2464,7 +2714,7 @@ public class WinlatorProSuite {
     }
 
     /** Окно UnityCrashHandler = игра упала. Даём ему 3 с дописать error.log, закрываем и показываем причину. */
-    private static void handleUnityCrash(final XServerDisplayActivity activity, final Container container) {
+    private static void handleUnityCrash(final XServerDisplayActivity activity, final Container container, final String gameName) {
         final Handler h = new Handler(Looper.getMainLooper());
         AppUtils.showToast(activity, "Игра Unity аварийно закрылась — собираю лог…");
         h.postDelayed(() -> {
@@ -2476,8 +2726,9 @@ public class WinlatorProSuite {
                 }
             } catch (Throwable ignored) {}
             Executors.newSingleThreadExecutor().execute(() -> {
-                final String report = collectUnityCrashReport(container);
-                h.post(() -> showUnityCrashDialog(activity, report));
+                final String report = buildReportHeader(activity, container, gameName) + collectUnityCrashReport(container);
+                final File saved = saveReportToDownloads(gameName, report);
+                h.post(() -> showUnityCrashDialog(activity, report + (saved != null ? "\nЛог сохранён: " + saved.getAbsolutePath() + "\n" : "")));
             });
         }, 3000);
     }
@@ -2576,6 +2827,7 @@ public class WinlatorProSuite {
         if (activity == null || activity.isFinishing() || activity.isDestroyed()) return;
         final String advice = "Игра закрылась с ошибкой, Unity показал окно сбоя (UnityCrashHandler) — оно закрыто автоматически.\n\n"
             + "Что попробовать:\n"
+            + (activity.unityLaunch ? "• Режим совместимости Unity уже включён автоматически (Box64 CONSERVATIVE + STRONGMEM).\n" : "")
             + "• В настройках контейнера смените DX-обёртку: DXVK 2.4.1 ⇄ DXVK 1.7.2 ⇄ WineD3D и запустите снова.\n"
             + "• Если падает сразу на заставке — включите в контейнере d3dcompiler_47 / проверьте часовой пояс.\n"
             + "• Нажмите «Скопировать» и пришлите текст — по нему видна точная причина.\n\n";
@@ -3142,6 +3394,8 @@ public class WinlatorProSuite {
     ) {
         stopWatchdog();
         unityCrashShown = false;
+        gameWindowSeen = false;
+        gameMissingTicks = 0;
         final Handler handler = new Handler(Looper.getMainLooper());
         activeWatchdogHandler = handler;
 
@@ -3155,6 +3409,8 @@ public class WinlatorProSuite {
                     if (activeWatchdogHandler != handler || activity.isFinishing() || activity.isDestroyed()) return;
                     int mappedWindows = 0;
                     final boolean[] crashSeen = {false, false}; // [0] окно сбоя найдено, [1] сканирование прошло
+                    final boolean[] gameNow = {false};
+                    final String targetBase = gameWindowKey(targetExeName);
                     try {
                         XServer xs = activity.getXServer();
                         if (xs != null && xs.windowManager != null && xs.windowManager.rootWindow != null) {
@@ -3170,6 +3426,7 @@ public class WinlatorProSuite {
                                         String nm = w.getName();
                                         String probe = ((cls != null ? cls : "") + " " + (nm != null ? nm : "")).toLowerCase(Locale.ROOT);
                                         if (probe.contains("unitycrashhandler")) crashSeen[0] = true;
+                                        else if (!targetBase.isEmpty() && cls != null && cls.toLowerCase(Locale.ROOT).contains(targetBase)) gameNow[0] = true;
                                     }
                                 }
                             }
@@ -3185,9 +3442,22 @@ public class WinlatorProSuite {
                         tvWatchdog.setTextColor(UI_TEXT_DIM);
                         if (crashSeen[0] && !unityCrashShown) {
                             unityCrashShown = true;
-                            handleUnityCrash(activity, container);
+                            gameWindowSeen = false;
+                            handleUnityCrash(activity, container, targetExeName);
                         } else if (!crashSeen[0] && crashSeen[1] && unityCrashShown) {
                             unityCrashShown = false;
+                        }
+                        // v12.6.1: окно игры пропало (тихий вылет без окна UnityCrashHandler) — показываем причину из лога
+                        if (gameNow[0]) {
+                            gameWindowSeen = true;
+                            gameMissingTicks = 0;
+                        } else if (gameWindowSeen && crashSeen[1] && !crashSeen[0]) {
+                            gameMissingTicks++;
+                            if (gameMissingTicks >= 2) {
+                                gameWindowSeen = false;
+                                gameMissingTicks = 0;
+                                onGameWindowClosed(activity, container, targetExeName);
+                            }
                         }
                     });
                 });

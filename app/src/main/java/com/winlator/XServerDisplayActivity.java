@@ -70,6 +70,7 @@ import com.winlator.pro.WinlatorProSuite;
 import com.winlator.renderer.GLRenderer;
 import com.winlator.services.ForegroundService;
 import com.winlator.widget.FrameRating;
+import com.winlator.box64.Box64Preset;
 import com.winlator.widget.InputControlsView;
 import com.winlator.widget.MagnifierView;
 import com.winlator.widget.TouchpadView;
@@ -115,6 +116,8 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
     private InputControlsManager inputControlsManager;
     private RootFS rootFS;
     private FrameRating frameRating;
+    private File launchTargetExe;
+    public volatile boolean unityLaunch = false;
     private Runnable editInputControlsCallback;
     private Shortcut shortcut;
     private PreloaderDialog preloaderDialog;
@@ -529,6 +532,7 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
             String uPath = WineUtils.dosToUnixPath(shortcut.path, container);
             if (uPath != null && !uPath.isEmpty()) targetExecFile = new File(uPath);
         }
+        launchTargetExe = targetExecFile;
         String extraWinePath = WinlatorProSuite.prepareGameFolderAndDependencies(this, container, targetExecFile);
         if (extraWinePath != null && !extraWinePath.isEmpty()) {
             envVars.put("WINEPATH", extraWinePath);
@@ -595,6 +599,25 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
             if (!envVars.has("WINEESYNC")) envVars.put("WINEESYNC", "1");
 
             guestProgramLauncherComponent.setBox64Preset(shortcut != null ? shortcut.getExtra("box64Preset", container.getBox64Preset()) : container.getBox64Preset());
+
+            // v12.6.1: кэш шейдеров Mesa не больше 256 МБ (раньше рос до 1 ГБ и «съедал» диск C)
+            if (!envVars.has("MESA_SHADER_CACHE_MAX_SIZE")) envVars.put("MESA_SHADER_CACHE_MAX_SIZE", "256M");
+
+            // v12.6.1: игры на Unity (UnityPlayer.dll) — безопасный режим Box64. Пресет PERFORMANCE
+            // (CALLRET=1, STRONGMEM=0, BIGBLOCK=3) ломает исключения/многопоточность движка → вылет при загрузке уровня
+            if (WinlatorProSuite.isUnityGame(launchTargetExe)) {
+                unityLaunch = true;
+                String chosenPreset = guestProgramLauncherComponent.getBox64Preset();
+                if (Box64Preset.PERFORMANCE.equals(chosenPreset) || Box64Preset.INTERMEDIATE.equals(chosenPreset)) {
+                    guestProgramLauncherComponent.setBox64Preset(Box64Preset.CONSERVATIVE);
+                    envVars.put("BOX64_DYNAREC_STRONGMEM", "1");
+                    envVars.put("BOX64_DYNAREC_CALLRET", "0");
+                    envVars.put("BOX64_DYNAREC_BIGBLOCK", "1");
+                    envVars.put("BOX64_DYNAREC_SAFEFLAGS", "2");
+                    envVars.put("BOX64_DYNAREC_NATIVEFLAGS", "0");
+                }
+                envVars.put("BOX64_UNITYPLAYER", "1");
+            }
         }
 
         environment = new XEnvironment(this, rootFS);
@@ -712,12 +735,13 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
         inputControlsView.setVisibility(View.GONE);
         rootView.addView(inputControlsView);
 
-        if (container != null && container.getHUDMode() != FrameRating.Mode.DISABLED.ordinal()) {
-            frameRating = new FrameRating(this);
-            frameRating.setMode(FrameRating.Mode.values()[container.getHUDMode()]);
-            frameRating.setVisibility(View.GONE);
-            rootView.addView(frameRating);
-        }
+        // v12.6.1: счётчик FPS работает всегда (FPS виден в HUD); сам оверлей — только если включён кнопкой FPS
+        frameRating = new FrameRating(this);
+        boolean fpsOverlayOn = container != null && container.getHUDMode() != FrameRating.Mode.DISABLED.ordinal();
+        frameRating.setMode(fpsOverlayOn ? FrameRating.Mode.values()[container.getHUDMode()] : FrameRating.Mode.SIMPLE);
+        frameRating.setShowOverlay(fpsOverlayOn);
+        frameRating.setVisibility(View.GONE);
+        rootView.addView(frameRating);
 
         // v12.6: обновляем пресеты ДО первого чтения профилей (иначе в первой сессии грузился старый пресет 5)
         WinlatorProSuite.ensureRichControlPresetsInstalled(this);
@@ -1205,6 +1229,10 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
 
     public XServer getXServer() {
         return xServer;
+    }
+
+    public FrameRating getFrameRating() {
+        return frameRating;
     }
 
     public WinHandler getWinHandler() {

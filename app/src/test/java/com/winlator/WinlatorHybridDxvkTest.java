@@ -255,4 +255,18 @@ public class WinlatorHybridDxvkTest {
             assertEquals((byte) 0x90, patched[512 + k]);
         }
     }
+
+    @Test
+    public void testUnityGameDetection() throws Exception {
+        File dir = new File(System.getProperty("java.io.tmpdir"), "winlator_unity_test");
+        dir.mkdirs();
+        File exe = new File(dir, "Souldiers.exe");
+        new java.io.FileOutputStream(exe).close();
+        new File(dir, "UnityPlayer.dll").delete();
+        new File(dir, "Souldiers_Data").delete();
+        assertFalse(WinlatorProSuite.isUnityGame(exe));
+        new File(dir, "Souldiers_Data").mkdirs();
+        assertTrue(WinlatorProSuite.isUnityGame(exe));
+        assertFalse(WinlatorProSuite.isUnityGame(null));
+    }
 }

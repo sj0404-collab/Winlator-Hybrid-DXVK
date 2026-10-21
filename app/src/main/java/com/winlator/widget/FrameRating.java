@@ -22,6 +22,8 @@ public class FrameRating extends FrameLayout implements Runnable {
     private long lastTime = 0;
     private short frameCount = 0;
     private float lastFPS = 0;
+    private volatile boolean showOverlay = true;
+    private volatile long lastFrameTime = 0;
     private final LinearLayout fpsPanel;
     private final LinearLayout gpuPanel;
     private final LinearLayout ramPanel;
@@ -85,6 +87,24 @@ public class FrameRating extends FrameLayout implements Runnable {
         }
     }
 
+    /** v12.6.1: FPS считается всегда; сам оверлей показываем только если включён. */
+    public void setShowOverlay(boolean show) {
+        showOverlay = show;
+        post(() -> {
+            if (!showOverlay) setVisibility(GONE);
+        });
+    }
+
+    public boolean isShowOverlay() {
+        return showOverlay;
+    }
+
+    /** Текущий FPS игры (0 — если кадров не было больше 2 секунд). */
+    public float getLastFPS() {
+        if (SystemClock.elapsedRealtime() - lastFrameTime > 2000) return 0;
+        return lastFPS;
+    }
+
     public Mode getMode() {
         return mode;
     }
@@ -107,6 +127,7 @@ public class FrameRating extends FrameLayout implements Runnable {
 
     public void update() {
         long time = SystemClock.elapsedRealtime();
+        lastFrameTime = time;
         if (time >= lastTime + 500) {
             lastFPS = ((float)(frameCount * 1000) / (time - lastTime));
             post(this);
@@ -119,6 +140,10 @@ public class FrameRating extends FrameLayout implements Runnable {
 
     @Override
     public void run() {
+        if (!showOverlay) {
+            if (getVisibility() != GONE) setVisibility(GONE);
+            return;
+        }
         if (getVisibility() == GONE) setVisibility(View.VISIBLE);
         ((TextView)fpsPanel.getChildAt(1)).setText(String.format(Locale.ENGLISH, "%.1f", lastFPS));
 
