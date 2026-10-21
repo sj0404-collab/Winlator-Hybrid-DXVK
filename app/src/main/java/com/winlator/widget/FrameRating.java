@@ -23,6 +23,16 @@ public class FrameRating extends FrameLayout implements Runnable {
     private short frameCount = 0;
     private float lastFPS = 0;
     private volatile boolean showOverlay = true;
+    private volatile boolean statsPending = false;
+    private static final java.util.concurrent.ExecutorService STATS_EXEC = java.util.concurrent.Executors.newSingleThreadExecutor(rn -> {
+        Thread t = new Thread(rn, "FrameRatingStats");
+        t.setDaemon(true);
+        return t;
+    });
+
+    private static void setTextIfChanged(TextView tv, String text) {
+        if (tv != null && text != null && !text.contentEquals(tv.getText())) tv.setText(text);
+    }
     private volatile long lastFrameTime = 0;
     private final LinearLayout fpsPanel;
     private final LinearLayout gpuPanel;
@@ -145,23 +155,31 @@ public class FrameRating extends FrameLayout implements Runnable {
             return;
         }
         if (getVisibility() == GONE) setVisibility(View.VISIBLE);
-        ((TextView)fpsPanel.getChildAt(1)).setText(String.format(Locale.ENGLISH, "%.1f", lastFPS));
+        setTextIfChanged((TextView)fpsPanel.getChildAt(1), String.format(Locale.ENGLISH, "%.1f", lastFPS));
 
-        if (mode == Mode.FULL && ++tick >= 2) {
+        // v12.6.2: память/частоты читаем в фоне — раньше binder и /sys в UI-потоке давали микрофризы раз в секунду
+        if (mode == Mode.FULL && ++tick >= 2 && !statsPending) {
             tick = 0;
-            activityManager.getMemoryInfo(memoryInfo);
-            long usedMem = memoryInfo.totalMem - memoryInfo.availMem;
-            String ramText = StringUtils.formatBytes(usedMem, false)+"/"+StringUtils.formatBytes(memoryInfo.totalMem);
-            ((TextView)ramPanel.getChildAt(1)).setText(ramText);
-
-            if (cpuInfo == null) {
-                cpuInfo = "Box64 v"+ Box64Utils.extractBinVersion(cpuPanel.getContext());
-            }
-
-            short[] clockSpeeds = CPUStatus.getCurrentClockSpeeds();
-            int maxClockSpeed = 0;
-            for (short clockSpeed : clockSpeeds) maxClockSpeed = Math.max(maxClockSpeed, clockSpeed);
-            ((TextView)cpuPanel.getChildAt(1)).setText(CPUStatus.formatClockSpeed(maxClockSpeed)+" | "+cpuInfo);
+            statsPending = true;
+            STATS_EXEC.execute(() -> {
+                String ramText = null, cpuText = null;
+                try {
+                    activityManager.getMemoryInfo(memoryInfo);
+                    long usedMem = memoryInfo.totalMem - memoryInfo.availMem;
+                    ramText = StringUtils.formatBytes(usedMem, false)+"/"+StringUtils.formatBytes(memoryInfo.totalMem);
+                    if (cpuInfo == null) cpuInfo = "Box64 v"+ Box64Utils.extractBinVersion(cpuPanel.getContext());
+                    short[] clockSpeeds = CPUStatus.getCurrentClockSpeeds();
+                    int maxClockSpeed = 0;
+                    for (short clockSpeed : clockSpeeds) maxClockSpeed = Math.max(maxClockSpeed, clockSpeed);
+                    cpuText = CPUStatus.formatClockSpeed(maxClockSpeed)+" | "+cpuInfo;
+                } catch (Throwable ignored) {}
+                final String fRam = ramText, fCpu = cpuText;
+                post(() -> {
+                    statsPending = false;
+                    setTextIfChanged((TextView)ramPanel.getChildAt(1), fRam);
+                    setTextIfChanged((TextView)cpuPanel.getChildAt(1), fCpu);
+                });
+            });
         }
     }
 }

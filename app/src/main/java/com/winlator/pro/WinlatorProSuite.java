@@ -1,5 +1,8 @@
 package com.winlator.pro;
 
+import com.winlator.core.EnvVars;
+import com.winlator.xenvironment.components.GuestProgramLauncherComponent;
+import com.winlator.box64.Box64Preset;
 import android.os.Build;
 import com.winlator.widget.FrameRating;
 import android.content.ClipData;
@@ -374,7 +377,7 @@ public class WinlatorProSuite {
         // 1. Универсальный Лаунчер (Игры / Программы / Система)
         Button btnLauncher = createStyledButton(ctx, "🎮 Лаунчер (Игра / Программа / Система)", 0xFF0284C7, 0xFF38BDF8);
         btnLauncher.setOnClickListener(v -> {
-            Executors.newSingleThreadExecutor().execute(() -> {
+            BG.execute(() -> {
                 final Container target = resolveTargetContainer(activity, container);
                 activity.runOnUiThread(() -> {
                     if (target != null) {
@@ -390,7 +393,7 @@ public class WinlatorProSuite {
         // 2. Открыть папку с игрой целиком
         Button btnPickFolder = createStyledButton(ctx, "📁 Открыть папку с игрой", 0xFF059669, 0xFF34D399);
         btnPickFolder.setOnClickListener(v -> {
-            Executors.newSingleThreadExecutor().execute(() -> {
+            BG.execute(() -> {
                 final Container target = resolveTargetContainer(activity, container);
                 activity.runOnUiThread(() -> {
                     if (target != null) {
@@ -406,7 +409,7 @@ public class WinlatorProSuite {
         // 3. Графика / FPS / Скорость + Шейдеры
         Button btnGraphics = createStyledButton(ctx, "🎨 Графика / FPS / Шейдеры", 0xFF7C3AED, 0xFFA78BFA);
         btnGraphics.setOnClickListener(v -> {
-            Executors.newSingleThreadExecutor().execute(() -> {
+            BG.execute(() -> {
                 final Container target = resolveTargetContainer(activity, container);
                 activity.runOnUiThread(() -> {
                     if (target != null) {
@@ -432,7 +435,7 @@ public class WinlatorProSuite {
         // 5. Обновить ярлыки на Рабочем столе
         Button btnSyncIcons = createStyledButton(ctx, "📌 Ярлыки на Рабочий стол", 0xFF1E293B, 0xFF64748B);
         btnSyncIcons.setOnClickListener(v -> {
-            Executors.newSingleThreadExecutor().execute(() -> {
+            BG.execute(() -> {
                 final Container target = resolveTargetContainer(activity, container);
                 if (target != null) {
                     final int count = syncInstalledExeToDesktopWithIcons(activity, target);
@@ -466,7 +469,7 @@ public class WinlatorProSuite {
     public static void launchWithMemoryCheck(final Activity activity, final Container container, final String execPathOrNull) {
         if (activity == null || container == null) return;
 
-        Executors.newSingleThreadExecutor().execute(() -> {
+        BG.execute(() -> {
             String resolvedPath = execPathOrNull;
             if (resolvedPath != null && !resolvedPath.isEmpty()) {
                 File f = resolveFullFolderExeIfOrphan(new File(resolvedPath));
@@ -757,7 +760,7 @@ public class WinlatorProSuite {
         final MainActivity ma = (MainActivity) activity;
         ma.setOpenDirectoryCallback(treeUri -> {
             if (treeUri == null) return;
-            Executors.newSingleThreadExecutor().execute(() -> {
+            BG.execute(() -> {
                 String folderPath = FileUtils.getFilePathFromUri(treeUri);
                 if (folderPath == null || folderPath.isEmpty()) {
                     String last = treeUri.getLastPathSegment();
@@ -846,6 +849,26 @@ public class WinlatorProSuite {
             if (baseName.isEmpty()) baseName = exeFile.getName();
             String safeIconName = baseName.replaceAll("[^a-zA-Z0-9._-]", "_");
 
+            // v12.6.2: ярлык уже есть и указывает на этот же .exe — ничего не делаем (раньше при каждом открытии меню
+            // заново разбиралась иконка, дважды сжимался PNG и перезаписывался ярлык, стирая его личные настройки)
+            File existingEntry = new File(desktopDir, baseName + ".desktop");
+            String preservedExtra = "";
+            if (existingEntry.isFile()) {
+                String old = FileUtils.readString(existingEntry);
+                String dosNow = WineUtils.unixToDOSPath(exeFile.getAbsolutePath(), container);
+                if (old != null && dosNow != null && !dosNow.isEmpty() && old.contains(StringUtils.escapeDOSPath(dosNow))) return false;
+                int ix = old != null ? old.indexOf("[Extra Data]") : -1;
+                if (ix >= 0) {
+                    StringBuilder keep = new StringBuilder();
+                    for (String line : old.substring(ix + 12).split("\n")) {
+                        String t = line.trim();
+                        if (t.startsWith("[")) break;
+                        if (!t.isEmpty() && !t.startsWith("container_id=")) keep.append(t).append('\n');
+                    }
+                    preservedExtra = keep.toString();
+                }
+            }
+
             // Извлекаем реальную иконку из .exe через PEParser во все стандартные папки иконок контейнера
             Bitmap iconBmp = null;
             if (exeFile.getName().toLowerCase(Locale.ROOT).endsWith(".exe")) {
@@ -899,7 +922,7 @@ public class WinlatorProSuite {
                 "Icon=" + safeIconName + "\n" +
                 "StartupWMClass=" + exeFile.getName() + "\n" +
                 "\n[Extra Data]\n" +
-                "container_id=" + container.id + "\n";
+                "container_id=" + container.id + "\n" + preservedExtra;
             FileUtils.writeString(desktopEntry, content);
             return true;
         } catch (Throwable e) {
@@ -1098,7 +1121,7 @@ public class WinlatorProSuite {
         if (children == null) return;
 
         for (File f : children) {
-            File targetFile = resolveFullFolderExeIfOrphan(f);
+            File targetFile = f.getName().toLowerCase(Locale.ROOT).endsWith(".exe") ? resolveFullFolderExeIfOrphan(f) : f;
             String abs = targetFile.getAbsolutePath();
             if (visited.contains(abs)) continue;
             visited.add(abs);
@@ -1188,7 +1211,7 @@ public class WinlatorProSuite {
             if (activity instanceof MainActivity) {
                 final MainActivity ma = (MainActivity) activity;
                 ma.setOpenFileCallback(uri -> {
-                    Executors.newSingleThreadExecutor().execute(() -> {
+                    BG.execute(() -> {
                         ContainerManager cm = new ContainerManager(activity);
                         final File imported = cm.importExeFromUri(uri, container);
                         activity.runOnUiThread(() -> {
@@ -1401,10 +1424,14 @@ public class WinlatorProSuite {
 
         Button btnPinAll = createStyledButton(ctx, "📌 Вынести Игры/Программы на Рабочий стол", 0xFF059669, 0xFF34D399);
         btnPinAll.setOnClickListener(v -> {
-            int added = syncInstalledExeToDesktopWithIcons(activity, container);
-            AppUtils.showToast(activity, "📌 Игры и программы (" + added + " шт.) вынесены с иконками на Рабочий стол!");
-            if (onRefreshCallback != null) onRefreshCallback.run();
             dialog.dismiss();
+            BG.execute(() -> {
+                final int added = syncInstalledExeToDesktopWithIcons(activity, container);
+                activity.runOnUiThread(() -> {
+                    AppUtils.showToast(activity, "📌 Игры и программы (" + added + " шт.) вынесены с иконками на Рабочий стол!");
+                    if (onRefreshCallback != null) onRefreshCallback.run();
+                });
+            });
         });
         bottomRow.addView(btnPinAll, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.4f) {{
             rightMargin = dp(ctx, 6);
@@ -2104,7 +2131,7 @@ public class WinlatorProSuite {
         tvFps.setSingleLine(true);
         tvFps.setPadding(dp(activity, 2), dp(activity, 4), dp(activity, 6), dp(activity, 4));
         tvFps.setVisibility(View.GONE);
-        statusLine.addView(tvFps);
+        statusLine.addView(tvFps, new LinearLayout.LayoutParams(dp(activity, 104), LinearLayout.LayoutParams.WRAP_CONTENT));
         final Handler fpsHandler = new Handler(Looper.getMainLooper());
         fpsHandler.post(new Runnable() {
             @Override
@@ -2113,8 +2140,9 @@ public class WinlatorProSuite {
                 FrameRating fr = activity.getFrameRating();
                 float fps = fr != null ? fr.getLastFPS() : 0f;
                 if (fps >= 0.5f) {
-                    tvFps.setText(String.format(Locale.US, "%.0f FPS · %.0f мс", fps, 1000f / fps));
-                    tvFps.setVisibility(View.VISIBLE);
+                    String t = String.format(Locale.US, "%.0f FPS · %.0f мс", fps, 1000f / fps);
+                    if (!t.contentEquals(tvFps.getText())) tvFps.setText(t);
+                    if (tvFps.getVisibility() != View.VISIBLE) tvFps.setVisibility(View.VISIBLE);
                 } else if (tvFps.getVisibility() != View.GONE) {
                     tvFps.setVisibility(View.GONE);
                 }
@@ -2268,12 +2296,35 @@ public class WinlatorProSuite {
             wakeHud.run();
             showStorageDialog(activity, container);
         });
+        // v12.6.2: режим Unity для этой игры (Скорость / Баланс / Стабильность), применяется при следующем запуске
+        final Button btnUnity = hudButton(activity, "Unity");
+        btnUnity.setVisibility(View.GONE);
+        btnUnity.setOnClickListener(v -> {
+            wakeHud.run();
+            cycleUnityLevel(activity, btnUnity);
+        });
+        final Handler unityBtnHandler = new Handler(Looper.getMainLooper());
+        unityBtnHandler.postDelayed(new Runnable() {
+            int tries = 0;
+
+            @Override
+            public void run() {
+                if (activity.isFinishing() || activity.isDestroyed()) return;
+                File exe = activity.getLaunchTargetExe();
+                if (activity.unityLevel >= 0 && exe != null) {
+                    btnUnity.setText("Unity: " + unityLevelName(getUnityLevel(activity, exe)));
+                    btnUnity.setVisibility(View.VISIBLE);
+                    return;
+                }
+                if (++tries < 40) unityBtnHandler.postDelayed(this, 3000);
+            }
+        }, 3000);
         final Button btnTasks = hudButton(activity, "Задачи");
         btnTasks.setOnClickListener(v -> {
             wakeHud.run();
             (new TaskManagerDialog(activity)).show();
         });
-        for (Button ab : new Button[]{btnDesktopLauncher, btnGfxStudio, btnControls, btnFpsTest, btnStorage, btnTasks}) {
+        for (Button ab : new Button[]{btnDesktopLauncher, btnGfxStudio, btnControls, btnFpsTest, btnUnity, btnStorage, btnTasks}) {
             LinearLayout.LayoutParams alp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(activity, 28));
             alp.rightMargin = dp(activity, 4);
             actionsRow.addView(ab, alp);
@@ -2475,12 +2526,12 @@ public class WinlatorProSuite {
     private static void onGameWindowClosed(final XServerDisplayActivity activity, final Container container, final String gameName) {
         if (unityCrashShown || activity == null) return;
         final long closedAt = System.currentTimeMillis();
-        Executors.newSingleThreadExecutor().execute(() -> {
+        BG.execute(() -> {
             String body = collectUnityCrashReport(container);
             File err = findNewestUnityErrorLog(container);
             boolean freshCrashFolder = err != null && closedAt - err.lastModified() < 5 * 60_000L;
             final boolean crashed = freshCrashFolder || looksLikeCrash(body);
-            final String report = buildReportHeader(activity, container, gameName) + body;
+            final String report = buildReportHeader(activity, container, gameName) + (crashed ? downgradeUnityLevelAfterCrash(activity) : "") + body;
             final File saved = saveReportToDownloads(gameName, report);
             new Handler(Looper.getMainLooper()).post(() -> {
                 if (activity.isFinishing() || activity.isDestroyed()) return;
@@ -2569,7 +2620,7 @@ public class WinlatorProSuite {
             .create();
         dlg.show();
         final File root = container.getRootDir();
-        Executors.newSingleThreadExecutor().execute(() -> {
+        BG.execute(() -> {
             File driveC = new File(root, ".wine/drive_c");
             long total = dirSize(root);
             long windows = dirSize(new File(driveC, "windows"));
@@ -2578,13 +2629,19 @@ public class WinlatorProSuite {
             long progs = dirSize(new File(driveC, "Program Files")) + dirSize(new File(driveC, "Program Files (x86)"));
             long games = dirSize(new File(driveC, "Games"));
             long uri = dirSize(new File(activity.getCacheDir(), "uri_imports"));
+            long imageFs = 0;
+            try {
+                File rf = RootFS.find(activity).getRootDir();
+                imageFs = Math.max(0, dirSize(rf) - dirSize(new File(rf, "home")));
+            } catch (Throwable ignored) {}
             final String msg = "Всего в контейнере: " + StringUtils.formatBytes(total) + "\n\n"
                 + "• Windows (система, DirectX, VC++): " + StringUtils.formatBytes(windows) + "\n"
                 + "• Кэш шейдеров Mesa/DXVK: " + StringUtils.formatBytes(cache) + " (лимит 256 МБ)\n"
                 + "• Профили и сохранения (users): " + StringUtils.formatBytes(users) + "\n"
                 + "• Program Files: " + StringUtils.formatBytes(progs) + "\n"
                 + "• C:\\Games (то, что копировали сами): " + StringUtils.formatBytes(games) + "\n"
-                + "• Временные копии файлов: " + StringUtils.formatBytes(uri) + "\n\n"
+                + "• Временные копии файлов: " + StringUtils.formatBytes(uri) + "\n"
+                + "• Образ системы (Wine, Box64, драйверы — распаковывается один раз): " + StringUtils.formatBytes(imageFs) + "\n\n"
                 + "Игры из памяти телефона на диск C не копируются: они читаются на месте через диски "
                 + "D: (Загрузки), G: (вся память) и H: (SD-карта). Диск C растёт из-за кэша шейдеров и библиотек DirectX.";
             new Handler(Looper.getMainLooper()).post(() -> {
@@ -2592,7 +2649,7 @@ public class WinlatorProSuite {
                 dlg.setMessage(msg);
                 dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(b -> {
                     dlg.setMessage("Очищаю кэш…");
-                    Executors.newSingleThreadExecutor().execute(() -> {
+                    BG.execute(() -> {
                         long before = dirSize(new File(root, ".cache")) + dirSize(new File(activity.getCacheDir(), "uri_imports"));
                         File[] caches = new File(root, ".cache").listFiles();
                         if (caches != null) {
@@ -2612,6 +2669,183 @@ public class WinlatorProSuite {
                 });
             });
         });
+    }
+
+    // ===================== v12.6.2: фоновые задачи, режимы Unity, быстрые ядра =====================
+    /** Общий пул фоновых потоков (daemon, простаивающие потоки завершаются) — вместо утечки нового потока на каждый вызов. */
+    private static final java.util.concurrent.ExecutorService BG = Executors.newCachedThreadPool(rn -> {
+        Thread t = new Thread(rn, "WinlatorPro-bg");
+        t.setDaemon(true);
+        return t;
+    });
+    private static volatile long lastShortcutSyncMs = 0;
+    private static volatile boolean shortcutSyncRunning = false;
+
+    /** Поиск игр и ярлыков для меню — в фоне, не чаще раза в 30 с. onDone(число новых ярлыков) — в UI-потоке. */
+    public static void syncDesktopShortcutsInBackground(final Context ctx, final Container container, final java.util.function.IntConsumer onDone) {
+        long now = System.currentTimeMillis();
+        if (ctx == null || container == null || shortcutSyncRunning || now - lastShortcutSyncMs < 30_000L) return;
+        shortcutSyncRunning = true;
+        lastShortcutSyncMs = now;
+        BG.execute(() -> {
+            int added = 0;
+            try {
+                added = syncInstalledExeToDesktopWithIcons(ctx, container);
+            } catch (Throwable ignored) {
+            } finally {
+                shortcutSyncRunning = false;
+            }
+            final int fAdded = added;
+            if (onDone != null) new Handler(Looper.getMainLooper()).post(() -> onDone.accept(fAdded));
+        });
+    }
+
+    public static final int UNITY_SPEED = 0;
+    public static final int UNITY_BALANCE = 1;
+    public static final int UNITY_STABLE = 2;
+
+    public static String unityLevelName(int level) {
+        return level <= UNITY_SPEED ? "Скорость" : (level == UNITY_BALANCE ? "Баланс" : "Стабильность");
+    }
+
+    private static String unityPrefKey(File exe) {
+        return "unity_level_" + gameWindowKey(exe != null ? exe.getName() : "");
+    }
+
+    public static int getUnityLevel(Context ctx, File exe) {
+        try {
+            return PreferenceManager.getDefaultSharedPreferences(ctx).getInt(unityPrefKey(exe), UNITY_BALANCE);
+        } catch (Throwable t) {
+            return UNITY_BALANCE;
+        }
+    }
+
+    public static void setUnityLevel(Context ctx, File exe, int level) {
+        try {
+            PreferenceManager.getDefaultSharedPreferences(ctx).edit().putInt(unityPrefKey(exe), Math.max(UNITY_SPEED, Math.min(UNITY_STABLE, level))).apply();
+        } catch (Throwable ignored) {}
+    }
+
+    /**
+     * Настройки Box64 для Unity. Всегда: STRONGMEM=1 (многопоточность движка) и CALLRET=0 (исключения движка) —
+     * именно они убрали вылет. Остальное: Скорость (как PERFORMANCE), Баланс (быстро, по умолчанию), Стабильность (осторожно).
+     */
+    public static void applyUnityBox64Level(int level, GuestProgramLauncherComponent gplc, EnvVars env) {
+        if (level >= UNITY_STABLE) {
+            gplc.setBox64Preset(Box64Preset.CONSERVATIVE);
+            env.put("BOX64_DYNAREC_BIGBLOCK", "1");
+            env.put("BOX64_DYNAREC_SAFEFLAGS", "2");
+            env.put("BOX64_DYNAREC_NATIVEFLAGS", "0");
+            env.put("BOX64_DYNAREC_WEAKBARRIER", "1");
+        } else if (level == UNITY_BALANCE) {
+            gplc.setBox64Preset(Box64Preset.INTERMEDIATE);
+            env.put("BOX64_DYNAREC_BIGBLOCK", "2");
+            env.put("BOX64_DYNAREC_SAFEFLAGS", "1");
+            env.put("BOX64_DYNAREC_FASTNAN", "1");
+            env.put("BOX64_DYNAREC_X87DOUBLE", "0");
+            env.put("BOX64_DYNAREC_NATIVEFLAGS", "1");
+            env.put("BOX64_DYNAREC_FORWARD", "512");
+            env.put("BOX64_DYNAREC_WEAKBARRIER", "2");
+        } else {
+            gplc.setBox64Preset(Box64Preset.PERFORMANCE);
+            env.put("BOX64_DYNAREC_WEAKBARRIER", "2");
+        }
+        env.put("BOX64_DYNAREC_STRONGMEM", "1");
+        env.put("BOX64_DYNAREC_CALLRET", "0");
+    }
+
+    private static void cycleUnityLevel(XServerDisplayActivity activity, Button btn) {
+        File exe = activity.getLaunchTargetExe();
+        if (exe == null) return;
+        int cur = getUnityLevel(activity, exe);
+        int next = cur == UNITY_BALANCE ? UNITY_SPEED : (cur == UNITY_SPEED ? UNITY_STABLE : UNITY_BALANCE);
+        setUnityLevel(activity, exe, next);
+        btn.setText("Unity: " + unityLevelName(next));
+        AppUtils.showToast(activity, "Режим Unity: " + unityLevelName(next) + " — применится при следующем запуске игры");
+    }
+
+    /** После вылета следующий запуск этой игры — на шаг ближе к «Стабильности». */
+    private static String downgradeUnityLevelAfterCrash(XServerDisplayActivity activity) {
+        try {
+            if (activity == null || activity.unityLevel < 0) return "";
+            File exe = activity.getLaunchTargetExe();
+            if (exe == null) return "";
+            int cur = getUnityLevel(activity, exe);
+            if (cur >= UNITY_STABLE) return "";
+            setUnityLevel(activity, exe, cur + 1);
+            return "Следующий запуск — автоматически в режиме Unity «" + unityLevelName(cur + 1) + "».\n\n";
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    private static volatile int cachedFastMask = -1;
+
+    /** Маска быстрых ядер (по cpu_capacity, иначе по макс. частоте). 0 — если ядра одинаковые или быстрых меньше 3. */
+    static int fastCoresMask() {
+        if (cachedFastMask >= 0) return cachedFastMask;
+        int mask = 0;
+        try {
+            boolean useCapacity = new File("/sys/devices/system/cpu/cpu0/cpu_capacity").isFile();
+            long[] val = new long[16];
+            int n = 0;
+            long top = 0;
+            for (int i = 0; i < 16; i++) {
+                File base = new File("/sys/devices/system/cpu/cpu" + i);
+                if (!base.isDirectory()) break;
+                File src = useCapacity ? new File(base, "cpu_capacity") : new File(base, "cpufreq/cpuinfo_max_freq");
+                long v = 0;
+                try {
+                    String txt = FileUtils.readString(src);
+                    if (txt != null) v = Long.parseLong(txt.trim());
+                } catch (Throwable ignored) {}
+                val[i] = v;
+                n = i + 1;
+                top = Math.max(top, v);
+            }
+            int count = 0;
+            if (top > 0) {
+                double threshold = useCapacity ? 0.5 : 0.75;
+                for (int i = 0; i < n; i++) {
+                    if (val[i] >= top * threshold) {
+                        mask |= 1 << i;
+                        count++;
+                    }
+                }
+            }
+            if (count < 3 || count >= n) mask = 0;
+        } catch (Throwable t) {
+            mask = 0;
+        }
+        cachedFastMask = mask;
+        return mask;
+    }
+
+    private static String maskToList(int mask) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < 16; i++) if ((mask & (1 << i)) != 0) sb.append(sb.length() > 0 ? "," : "").append(i);
+        return sb.toString();
+    }
+
+    /** Закрепляет игру за быстрыми ядрами (меньше рывков), если пользователь не выбрал ядра сам в настройках контейнера. */
+    private static void applyFastCoresAffinity(XServerDisplayActivity activity, Container container, int pid, String exeName) {
+        try {
+            if (container != null && container.getCPUList() != null) return;
+            int mask = fastCoresMask();
+            if (mask == 0) return;
+            WinHandler wh = activity.getWinHandler();
+            if (wh == null) return;
+            if (pid > 0) {
+                wh.setProcessAffinity(pid, mask);
+            } else if (exeName != null && !exeName.trim().isEmpty()) {
+                String proc = exeName.trim();
+                if (!proc.toLowerCase(Locale.ROOT).endsWith(".exe")) proc = proc + ".exe";
+                wh.setProcessAffinity(proc, mask);
+            } else {
+                return;
+            }
+            AppUtils.showToast(activity, "⚡ Игра работает на быстрых ядрах: " + maskToList(mask));
+        } catch (Throwable ignored) {}
     }
 
     public static void ensureRichControlPresetsInstalled(Context context) {
@@ -2725,8 +2959,8 @@ public class WinlatorProSuite {
                     wh.killProcess("UnityCrashHandler32.exe");
                 }
             } catch (Throwable ignored) {}
-            Executors.newSingleThreadExecutor().execute(() -> {
-                final String report = buildReportHeader(activity, container, gameName) + collectUnityCrashReport(container);
+            BG.execute(() -> {
+                final String report = buildReportHeader(activity, container, gameName) + downgradeUnityLevelAfterCrash(activity) + collectUnityCrashReport(container);
                 final File saved = saveReportToDownloads(gameName, report);
                 h.post(() -> showUnityCrashDialog(activity, report + (saved != null ? "\nЛог сохранён: " + saved.getAbsolutePath() + "\n" : "")));
             });
@@ -3405,11 +3639,12 @@ public class WinlatorProSuite {
                 if (activeWatchdogHandler != handler || activity == null || activity.isFinishing() || activity.isDestroyed()) {
                     return;
                 }
-                Executors.newSingleThreadExecutor().execute(() -> {
+                BG.execute(() -> {
                     if (activeWatchdogHandler != handler || activity.isFinishing() || activity.isDestroyed()) return;
                     int mappedWindows = 0;
                     final boolean[] crashSeen = {false, false}; // [0] окно сбоя найдено, [1] сканирование прошло
                     final boolean[] gameNow = {false};
+                    final int[] gamePid = {0};
                     final String targetBase = gameWindowKey(targetExeName);
                     try {
                         XServer xs = activity.getXServer();
@@ -3426,7 +3661,10 @@ public class WinlatorProSuite {
                                         String nm = w.getName();
                                         String probe = ((cls != null ? cls : "") + " " + (nm != null ? nm : "")).toLowerCase(Locale.ROOT);
                                         if (probe.contains("unitycrashhandler")) crashSeen[0] = true;
-                                        else if (!targetBase.isEmpty() && cls != null && cls.toLowerCase(Locale.ROOT).contains(targetBase)) gameNow[0] = true;
+                                        else if (!targetBase.isEmpty() && cls != null && cls.toLowerCase(Locale.ROOT).contains(targetBase)) {
+                                            gameNow[0] = true;
+                                            if (gamePid[0] <= 0) gamePid[0] = w.getProcessId();
+                                        }
                                     }
                                 }
                             }
@@ -3438,7 +3676,8 @@ public class WinlatorProSuite {
                     final long ramMb = mem.freeRamBytes / (1024L * 1024L);
                     handler.post(() -> {
                         if (activeWatchdogHandler != handler || activity.isFinishing() || activity.isDestroyed()) return;
-                        tvWatchdog.setText("⠿  " + targetExeName + " · " + String.format(Locale.US, "%.1f", ramMb / 1024f) + " ГБ своб.");
+                        String wdText = "⠿  " + targetExeName + " · " + String.format(Locale.US, "%.1f", ramMb / 1024f) + " ГБ своб.";
+                        if (!wdText.contentEquals(tvWatchdog.getText())) tvWatchdog.setText(wdText);
                         tvWatchdog.setTextColor(UI_TEXT_DIM);
                         if (crashSeen[0] && !unityCrashShown) {
                             unityCrashShown = true;
@@ -3449,6 +3688,7 @@ public class WinlatorProSuite {
                         }
                         // v12.6.1: окно игры пропало (тихий вылет без окна UnityCrashHandler) — показываем причину из лога
                         if (gameNow[0]) {
+                            if (!gameWindowSeen) applyFastCoresAffinity(activity, container, gamePid[0], targetExeName);
                             gameWindowSeen = true;
                             gameMissingTicks = 0;
                         } else if (gameWindowSeen && crashSeen[1] && !crashSeen[0]) {

@@ -118,6 +118,7 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
     private FrameRating frameRating;
     private File launchTargetExe;
     public volatile boolean unityLaunch = false;
+    public volatile int unityLevel = -1;
     private Runnable editInputControlsCallback;
     private Shortcut shortcut;
     private PreloaderDialog preloaderDialog;
@@ -609,12 +610,9 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
                 unityLaunch = true;
                 String chosenPreset = guestProgramLauncherComponent.getBox64Preset();
                 if (Box64Preset.PERFORMANCE.equals(chosenPreset) || Box64Preset.INTERMEDIATE.equals(chosenPreset)) {
-                    guestProgramLauncherComponent.setBox64Preset(Box64Preset.CONSERVATIVE);
-                    envVars.put("BOX64_DYNAREC_STRONGMEM", "1");
-                    envVars.put("BOX64_DYNAREC_CALLRET", "0");
-                    envVars.put("BOX64_DYNAREC_BIGBLOCK", "1");
-                    envVars.put("BOX64_DYNAREC_SAFEFLAGS", "2");
-                    envVars.put("BOX64_DYNAREC_NATIVEFLAGS", "0");
+                    // v12.6.2: уровни Скорость / Баланс (по умолчанию) / Стабильность; STRONGMEM=1 и CALLRET=0 — всегда
+                    unityLevel = WinlatorProSuite.getUnityLevel(this, launchTargetExe);
+                    WinlatorProSuite.applyUnityBox64Level(unityLevel, guestProgramLauncherComponent, envVars);
                 }
                 envVars.put("BOX64_UNITYPLAYER", "1");
             }
@@ -1229,6 +1227,10 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
 
     public XServer getXServer() {
         return xServer;
+    }
+
+    public File getLaunchTargetExe() {
+        return launchTargetExe;
     }
 
     public FrameRating getFrameRating() {

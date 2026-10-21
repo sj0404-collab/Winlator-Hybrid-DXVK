@@ -46,9 +46,19 @@ public class ShortcutsFragment extends BaseFileManagerFragment<Shortcut> {
         if (getContext() != null && manager != null) {
             com.winlator.container.Container defCont = manager.getDefaultOrFirstContainer();
             if (defCont != null) {
-                WinlatorProSuite.syncInstalledExeToDesktopWithIcons(getContext(), defCont);
+                // v12.6.2: поиск игр/ярлыков — в фоне и не чаще раза в 30 с (раньше блокировал меню на каждом открытии)
+                WinlatorProSuite.syncDesktopShortcutsInBackground(getContext().getApplicationContext(), defCont, added -> {
+                    if (added > 0 && isAdded() && getView() != null) refreshListOnly();
+                });
             }
         }
+        Shortcut selectedFolder = !folderStack.isEmpty() ? folderStack.peek() : null;
+        ArrayList<Shortcut> shortcuts = manager.loadShortcuts(selectedFolder);
+        recyclerView.setAdapter(new ShortcutsAdapter(shortcuts));
+        emptyTextView.setVisibility(shortcuts.isEmpty() ? View.VISIBLE : View.GONE);
+    }
+
+    private void refreshListOnly() {
         Shortcut selectedFolder = !folderStack.isEmpty() ? folderStack.peek() : null;
         ArrayList<Shortcut> shortcuts = manager.loadShortcuts(selectedFolder);
         recyclerView.setAdapter(new ShortcutsAdapter(shortcuts));
