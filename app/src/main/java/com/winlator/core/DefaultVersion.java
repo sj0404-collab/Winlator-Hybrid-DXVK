@@ -18,6 +18,8 @@ public abstract class DefaultVersion {
     public static final String CNC_DDRAW = "6.6";
     public static final String SOUNDFONT = "SONiVOX-EAS-GM-Wavetable";
     public static final String HYBRID_DXVK = "1.7.2-2.4.1-hybrid";
+    /** v12.6.4: настоящий асинхронный DXVK (GPL async), шейдеры компилируются в фоне. */
+    public static final String ASYNC_DXVK = "2.4.1-gplasync";
     public static final String FAST_DXVK = "1.7.2";
     public static final String MINOR_DXVK = "1.10.3";
     public static final String MAJOR_DXVK = "2.4.1";

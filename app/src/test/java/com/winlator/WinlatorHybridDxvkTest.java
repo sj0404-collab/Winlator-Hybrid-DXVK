@@ -34,6 +34,7 @@ public class WinlatorHybridDxvkTest {
         assertTrue(names.contains("1.7.2"));
         assertTrue(names.contains("1.10.3"));
         assertTrue(names.contains("2.4.1"));
+        assertTrue(names.contains("2.4.1-gplasync"));
         assertEquals("1.7.2-2.4.1-hybrid", names.get(0));
     }
 

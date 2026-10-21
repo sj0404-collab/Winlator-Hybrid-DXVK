@@ -119,6 +119,8 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
     private File launchTargetExe;
     public volatile boolean unityLaunch = false;
     public volatile int unityLevel = -1;
+    /** v12.6.4: этот запуск идёт на асинхронном DXVK, выбранном автоматически. */
+    public volatile boolean asyncDxvkLaunch = false;
     private Runnable editInputControlsCallback;
     private Shortcut shortcut;
     private PreloaderDialog preloaderDialog;
@@ -970,6 +972,22 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
         return inputControlsView;
     }
 
+    /** v12.6.4: exe игры нужен уже при выборе DXVK (раньше, чем его вычисляет setupWineSystemFiles). */
+    private File resolveEarlyTargetExe() {
+        if (launchTargetExe != null) return launchTargetExe;
+        try {
+            Intent li = getIntent();
+            if (li != null && li.hasExtra("exec_path")) {
+                String rawExec = li.getStringExtra("exec_path");
+                if (rawExec != null && !rawExec.isEmpty()) return new File(rawExec);
+            } else if (shortcut != null && shortcut.path != null && !shortcut.path.isEmpty()) {
+                String uPath = WineUtils.dosToUnixPath(shortcut.path, container);
+                if (uPath != null && !uPath.isEmpty()) return new File(uPath);
+            }
+        } catch (Throwable ignored) {}
+        return null;
+    }
+
     private boolean extractDXWrapperFiles() {
         WineD3DConfigDialog.setEnvVars(dxwrapperConfig[0], envVars);
         String cacheId = "v12.4-";
@@ -978,6 +996,17 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
             requestedDxvkVer = DefaultVersion.HYBRID_DXVK;
             if (dxwrapper.equals(DXWrappers.DXVK)) {
                 dxwrapperConfig[0].put("version", requestedDxvkVer);
+            }
+        }
+
+        // v12.6.4: настоящий асинхронный DXVK (2.4.1-gplasync) вместо гибрида — шейдеры в фоне, без рывков.
+        asyncDxvkLaunch = false;
+        if (dxwrapper.equals(DXWrappers.DXVK) && requestedDxvkVer.equals(DefaultVersion.HYBRID_DXVK)) {
+            File earlyExe = resolveEarlyTargetExe();
+            if (earlyExe != null && com.winlator.pro.WinlatorProSuite.useAsyncDxvk(this, earlyExe)) {
+                requestedDxvkVer = DefaultVersion.ASYNC_DXVK;
+                dxwrapperConfig[0].put("version", requestedDxvkVer);
+                asyncDxvkLaunch = true;
             }
         }
 

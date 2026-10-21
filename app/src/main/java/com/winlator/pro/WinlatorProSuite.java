@@ -726,7 +726,9 @@ public class WinlatorProSuite {
 
         for (File f : files) {
             if (f.isDirectory()) {
-                if (!f.getName().startsWith(".")) {
+                String dn = f.getName().toLowerCase(Locale.ROOT);
+                // v12.6.4: *_Data / MonoBleedingEdge (Unity) — тысячи ресурсов, DLL оттуда Unity грузит сама по полному пути.
+                if (!dn.startsWith(".") && !dn.endsWith("_data") && !dn.equals("monobleedingedge")) {
                     scanGameFolderForRedistsAndDlls(container, rootGameDir, f, depth + 1, maxDepth, outDllDirsDos);
                 }
             } else {
@@ -2134,6 +2136,8 @@ public class WinlatorProSuite {
         tvFps.setPadding(dp(activity, 2), dp(activity, 4), dp(activity, 6), dp(activity, 4));
         tvFps.setVisibility(View.GONE);
         statusLine.addView(tvFps, new LinearLayout.LayoutParams(dp(activity, 104), LinearLayout.LayoutParams.WRAP_CONTENT));
+        final boolean[] firstFrameSeen = {false};
+        final long hudStartMs = android.os.SystemClock.elapsedRealtime();
         final Handler fpsHandler = new Handler(Looper.getMainLooper());
         fpsHandler.post(new Runnable() {
             @Override
@@ -2142,8 +2146,14 @@ public class WinlatorProSuite {
                 FrameRating fr = activity.getFrameRating();
                 float fps = fr != null ? fr.getLastFPS() : 0f;
                 fpsGovernorTick(activity, fps);
+                long sinceStart = android.os.SystemClock.elapsedRealtime() - hudStartMs;
                 if (fps >= 0.5f) {
+                    firstFrameSeen[0] = true;
                     String t = String.format(Locale.US, "%.0f FPS · %.0f мс", fps, 1000f / fps);
+                    if (!t.contentEquals(tvFps.getText())) tvFps.setText(t);
+                    if (tvFps.getVisibility() != View.VISIBLE) tvFps.setVisibility(View.VISIBLE);
+                } else if (!firstFrameSeen[0] && !desktopSession && sinceStart < 300000L) {
+                    String t = "⏳ Загрузка " + (sinceStart / 1000L) + " с";
                     if (!t.contentEquals(tvFps.getText())) tvFps.setText(t);
                     if (tvFps.getVisibility() != View.VISIBLE) tvFps.setVisibility(View.VISIBLE);
                 } else if (tvFps.getVisibility() != View.GONE) {
@@ -2534,7 +2544,7 @@ public class WinlatorProSuite {
             File err = findNewestUnityErrorLog(container);
             boolean freshCrashFolder = err != null && closedAt - err.lastModified() < 5 * 60_000L;
             final boolean crashed = freshCrashFolder || looksLikeCrash(body);
-            final String report = buildReportHeader(activity, container, gameName) + (crashed ? downgradeUnityLevelAfterCrash(activity) : "") + body;
+            final String report = buildReportHeader(activity, container, gameName) + (crashed ? stepDownAfterCrash(activity) : "") + body;
             final File saved = saveReportToDownloads(gameName, report);
             new Handler(Looper.getMainLooper()).post(() -> {
                 if (activity.isFinishing() || activity.isDestroyed()) return;
@@ -2855,6 +2865,38 @@ public class WinlatorProSuite {
     // ===================== v12.6.3: ровные кадры, панель производительности =====================
     public static final int FPS_AUTO = -1;
 
+    /** v12.6.4: асинхронный DXVK для игры. По умолчанию включён; после вылета на нём — выключается автоматически. */
+    public static boolean useAsyncDxvk(Context ctx, File exe) {
+        if (ctx == null || exe == null) return false;
+        try {
+            return PreferenceManager.getDefaultSharedPreferences(ctx).getBoolean("dxvk_async_" + gameWindowKey(exe.getName()), true);
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    public static void setAsyncDxvk(Context ctx, File exe, boolean on) {
+        if (ctx == null || exe == null) return;
+        try {
+            PreferenceManager.getDefaultSharedPreferences(ctx).edit().putBoolean("dxvk_async_" + gameWindowKey(exe.getName()), on).apply();
+        } catch (Throwable ignored) {}
+    }
+
+    /** После вылета: сначала откатываем асинхронный DXVK (если он был), иначе — режим Unity на ступень надёжнее. */
+    private static String stepDownAfterCrash(XServerDisplayActivity activity) {
+        try {
+            if (activity != null && activity.asyncDxvkLaunch) {
+                File exe = activity.getLaunchTargetExe();
+                if (exe != null && useAsyncDxvk(activity, exe)) {
+                    setAsyncDxvk(activity, exe, false);
+                    return "Следующий запуск — автоматически с обычным DXVK (асинхронный выключен для этой игры; "
+                        + "вернуть: Ещё → FPS/Производительность → DXVK).\n\n";
+                }
+            }
+        } catch (Throwable ignored) {}
+        return downgradeUnityLevelAfterCrash(activity);
+    }
+
     private static String gamePrefSuffix(XServerDisplayActivity a) {
         File exe = a != null ? a.getLaunchTargetExe() : null;
         String k = gameWindowKey(exe != null ? exe.getName() : "");
@@ -3135,6 +3177,15 @@ public class WinlatorProSuite {
                 getUnityLevel(activity, exe), v -> setUnityLevel(activity, exe, v)));
         }
 
+        if (activity.getLaunchTargetExe() != null) {
+            final File dexe = activity.getLaunchTargetExe();
+            root.addView(perfTitle(ctx, "DXVK (со следующего запуска)"));
+            root.addView(perfHint(ctx, "«Асинхронный» (2.4.1-gplasync) компилирует шейдеры в фоне — нет рывков, когда в игре появляются "
+                + "новые эффекты. «Обычный» — прежний гибрид 1.7.2/2.4.1. Сейчас работает: " + (activity.asyncDxvkLaunch ? "асинхронный" : "обычный") + "."));
+            root.addView(perfChips(ctx, new String[]{"Асинхронный", "Обычный"}, new int[]{1, 0}, useAsyncDxvk(activity, dexe) ? 1 : 0,
+                v -> setAsyncDxvk(activity, dexe, v == 1)));
+        }
+
         StringBuilder info = new StringBuilder();
         float[] rates = supportedRefreshRates(activity);
         info.append("Экран: ").append(Math.round(currentRefresh(activity))).append(" Гц (доступно:");
@@ -3276,7 +3327,7 @@ public class WinlatorProSuite {
                 }
             } catch (Throwable ignored) {}
             BG.execute(() -> {
-                final String report = buildReportHeader(activity, container, gameName) + downgradeUnityLevelAfterCrash(activity) + collectUnityCrashReport(container);
+                final String report = buildReportHeader(activity, container, gameName) + stepDownAfterCrash(activity) + collectUnityCrashReport(container);
                 final File saved = saveReportToDownloads(gameName, report);
                 h.post(() -> showUnityCrashDialog(activity, report + (saved != null ? "\nЛог сохранён: " + saved.getAbsolutePath() + "\n" : "")));
             });
