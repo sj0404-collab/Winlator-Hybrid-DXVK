@@ -102,8 +102,15 @@ public class PresentExtension extends Extension implements WindowManager.OnWindo
         }
     }
 
+    /**
+     * v12.6.3: ограничение кадров для ровной подачи. 0 — как раньше (60 при vsync, иначе без ограничения).
+     * Буфер кадра возвращается игре не чаще 1/fpsLimit — кадры идут ровно, без рывков 16/33 мс.
+     */
+    public static volatile int fpsLimit = 0;
+
     private void sendIdleNotifyScheduled(final Window window, final Pixmap pixmap, final int serial, final int idleFence) {
-        final long frameTime = 1000000000L / 60;
+        final int limit = fpsLimit;
+        final long frameTime = 1000000000L / (limit > 0 ? limit : 60);
         long now = System.nanoTime();
 
         long lastIdleTime = (long)window.getTag("lastIdleTime", now);
@@ -189,7 +196,7 @@ public class PresentExtension extends Extension implements WindowManager.OnWindo
                 }
                 else content.copyArea((short)0, (short)0, xOff, yOff, pixmap.drawable.width, pixmap.drawable.height, pixmap.drawable);
 
-                if (targetMSC > 0) {
+                if (targetMSC > 0 || fpsLimit > 0) {
                     sendIdleNotifyScheduled(window, pixmap, serial, idleFence);
                 }
                 else sendIdleNotify(window, pixmap, serial, idleFence);

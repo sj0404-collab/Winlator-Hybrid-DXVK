@@ -1,5 +1,7 @@
 package com.winlator.pro;
 
+import com.winlator.xserver.extensions.PresentExtension;
+import com.winlator.core.GPUHelper;
 import com.winlator.core.EnvVars;
 import com.winlator.xenvironment.components.GuestProgramLauncherComponent;
 import com.winlator.box64.Box64Preset;
@@ -2139,6 +2141,7 @@ public class WinlatorProSuite {
                 if (activity.isFinishing() || activity.isDestroyed()) return;
                 FrameRating fr = activity.getFrameRating();
                 float fps = fr != null ? fr.getLastFPS() : 0f;
+                fpsGovernorTick(activity, fps);
                 if (fps >= 0.5f) {
                     String t = String.format(Locale.US, "%.0f FPS · %.0f мс", fps, 1000f / fps);
                     if (!t.contentEquals(tvFps.getText())) tvFps.setText(t);
@@ -2284,7 +2287,7 @@ public class WinlatorProSuite {
         final Button btnFpsTest = hudButton(activity, "FPS");
         btnFpsTest.setOnClickListener(v -> {
             wakeHud.run();
-            cycleFpsOverlay(activity, container);
+            showPerformancePanel(activity, container);
         });
         btnFpsTest.setOnLongClickListener(v -> {
             wakeHud.run();
@@ -2636,7 +2639,7 @@ public class WinlatorProSuite {
             } catch (Throwable ignored) {}
             final String msg = "Всего в контейнере: " + StringUtils.formatBytes(total) + "\n\n"
                 + "• Windows (система, DirectX, VC++): " + StringUtils.formatBytes(windows) + "\n"
-                + "• Кэш шейдеров Mesa/DXVK: " + StringUtils.formatBytes(cache) + " (лимит 256 МБ)\n"
+                + "• Кэш шейдеров и кода (Mesa/DXVK/Box64): " + StringUtils.formatBytes(cache) + " (лимиты 256 + 512 МБ)\n"
                 + "• Профили и сохранения (users): " + StringUtils.formatBytes(users) + "\n"
                 + "• Program Files: " + StringUtils.formatBytes(progs) + "\n"
                 + "• C:\\Games (то, что копировали сами): " + StringUtils.formatBytes(games) + "\n"
@@ -2655,7 +2658,7 @@ public class WinlatorProSuite {
                         if (caches != null) {
                             for (File c : caches) {
                                 String n = c.getName().toLowerCase(Locale.ROOT);
-                                if (n.contains("mesa") || n.contains("dxvk") || n.contains("vkd3d") || n.endsWith(".dxvk-cache")) FileUtils.delete(c);
+                                if (n.contains("mesa") || n.contains("dxvk") || n.contains("vkd3d") || n.contains("box64") || n.endsWith(".dxvk-cache")) FileUtils.delete(c);
                             }
                         }
                         FileUtils.delete(new File(activity.getCacheDir(), "uri_imports"));
@@ -2830,6 +2833,7 @@ public class WinlatorProSuite {
     /** Закрепляет игру за быстрыми ядрами (меньше рывков), если пользователь не выбрал ядра сам в настройках контейнера. */
     private static void applyFastCoresAffinity(XServerDisplayActivity activity, Container container, int pid, String exeName) {
         try {
+            if (!isFastCoresEnabled(activity)) return;
             if (container != null && container.getCPUList() != null) return;
             int mask = fastCoresMask();
             if (mask == 0) return;
@@ -2846,6 +2850,318 @@ public class WinlatorProSuite {
             }
             AppUtils.showToast(activity, "⚡ Игра работает на быстрых ядрах: " + maskToList(mask));
         } catch (Throwable ignored) {}
+    }
+
+    // ===================== v12.6.3: ровные кадры, панель производительности =====================
+    public static final int FPS_AUTO = -1;
+
+    private static String gamePrefSuffix(XServerDisplayActivity a) {
+        File exe = a != null ? a.getLaunchTargetExe() : null;
+        String k = gameWindowKey(exe != null ? exe.getName() : "");
+        return k.isEmpty() ? "desktop" : k;
+    }
+
+    public static int getFpsMode(XServerDisplayActivity a) {
+        try {
+            return PreferenceManager.getDefaultSharedPreferences(a).getInt("fps_limit_" + gamePrefSuffix(a), FPS_AUTO);
+        } catch (Throwable t) {
+            return FPS_AUTO;
+        }
+    }
+
+    private static void setFpsMode(XServerDisplayActivity a, int mode) {
+        try {
+            PreferenceManager.getDefaultSharedPreferences(a).edit().putInt("fps_limit_" + gamePrefSuffix(a), mode).apply();
+        } catch (Throwable ignored) {}
+        GOV_MODE = Integer.MIN_VALUE; // применится на следующем тике (через секунду)
+    }
+
+    public static boolean isFastCoresEnabled(XServerDisplayActivity a) {
+        try {
+            return PreferenceManager.getDefaultSharedPreferences(a).getBoolean("fast_cores_" + gamePrefSuffix(a), true);
+        } catch (Throwable t) {
+            return true;
+        }
+    }
+
+    private static float currentRefresh(Activity a) {
+        try {
+            return a.getWindowManager().getDefaultDisplay().getRefreshRate();
+        } catch (Throwable t) {
+            return 60f;
+        }
+    }
+
+    /** Частоты экрана, доступные при текущем разрешении (60/90/120/144…). */
+    private static float[] supportedRefreshRates(Activity a) {
+        try {
+            android.view.Display d = a.getWindowManager().getDefaultDisplay();
+            android.view.Display.Mode cur = d.getMode();
+            java.util.TreeSet<Float> set = new java.util.TreeSet<>();
+            for (android.view.Display.Mode m : d.getSupportedModes()) {
+                if (m.getPhysicalWidth() == cur.getPhysicalWidth() && m.getPhysicalHeight() == cur.getPhysicalHeight()) {
+                    set.add((float) Math.round(m.getRefreshRate()));
+                }
+            }
+            float[] out = new float[set.size()];
+            int i = 0;
+            for (Float f : set) out[i++] = f;
+            if (out.length > 0) return out;
+        } catch (Throwable ignored) {}
+        return new float[]{Math.round(currentRefresh(a))};
+    }
+
+    /** Лимиты, при которых каждый кадр держится на экране одинаковое число тактов. */
+    private static int[] evenCaps(Activity a) {
+        float[] rates = supportedRefreshRates(a);
+        java.util.ArrayList<Integer> caps = new java.util.ArrayList<>();
+        for (int cap : new int[]{60, 45, 40, 30}) {
+            for (float r : rates) {
+                float k = r / cap;
+                if (k >= 0.99f && Math.abs(k - Math.round(k)) < 0.03f) {
+                    caps.add(cap);
+                    break;
+                }
+            }
+        }
+        if (caps.isEmpty()) caps.add(30);
+        int[] out = new int[caps.size()];
+        for (int i = 0; i < out.length; i++) out[i] = caps.get(i);
+        return out;
+    }
+
+    /** Режим экрана под лимит: 30→60 Гц, 40→120 Гц, 45→90 Гц, 60→120 Гц (если есть). 0 — вернуть системный. */
+    private static int requestDisplayModeFor(Activity a, int cap) {
+        int chosenRate = 0;
+        try {
+            android.view.Display d = a.getWindowManager().getDefaultDisplay();
+            android.view.Display.Mode cur = d.getMode();
+            int bestId = 0;
+            float bestRate = 0;
+            if (cap > 0) {
+                float bestScore = Float.MAX_VALUE;
+                for (android.view.Display.Mode m : d.getSupportedModes()) {
+                    if (m.getPhysicalWidth() != cur.getPhysicalWidth() || m.getPhysicalHeight() != cur.getPhysicalHeight()) continue;
+                    float r = m.getRefreshRate();
+                    float k = r / cap;
+                    if (k < 0.99f || Math.abs(k - Math.round(k)) >= 0.03f) continue;
+                    // лучше всего ×2 (запас на такт), затем минимальная подходящая частота (меньше расход батареи)
+                    float score = (Math.round(k) >= 2 ? 0 : 1000) + r;
+                    if (score < bestScore) {
+                        bestScore = score;
+                        bestId = m.getModeId();
+                        bestRate = r;
+                    }
+                }
+            }
+            android.view.WindowManager.LayoutParams lp = a.getWindow().getAttributes();
+            if (lp.preferredDisplayModeId != bestId) {
+                lp.preferredDisplayModeId = bestId;
+                a.getWindow().setAttributes(lp);
+            }
+            chosenRate = Math.round(bestRate);
+        } catch (Throwable ignored) {}
+        return chosenRate;
+    }
+
+    private static int GOV_MODE = Integer.MIN_VALUE;
+    private static int GOV_PHASE = 0;
+    private static int GOV_CAP = 0;
+    private static int GOV_LOW = 0;
+    private static int GOV_N = 0;
+    private static final float[] GOV_SAMPLES = new float[32];
+
+    private static void applyFpsCap(XServerDisplayActivity a, int cap) {
+        GOV_CAP = cap;
+        PresentExtension.fpsLimit = cap;
+        requestDisplayModeFor(a, cap);
+    }
+
+    /** Раз в секунду (UI-поток): Авто-режим меряет FPS 12 с без лимита и ставит ровный лимит, кратный частоте экрана. */
+    private static void fpsGovernorTick(XServerDisplayActivity a, float fps) {
+        int mode = getFpsMode(a);
+        if (mode != GOV_MODE) {
+            GOV_MODE = mode;
+            GOV_PHASE = 0;
+            GOV_N = 0;
+            GOV_LOW = 0;
+            if (mode == FPS_AUTO) {
+                GOV_CAP = 0;
+                PresentExtension.fpsLimit = 0;
+                requestDisplayModeFor(a, 0);
+            } else {
+                applyFpsCap(a, Math.max(0, mode));
+            }
+        }
+        if (mode != FPS_AUTO || fps < 5f) return;
+        if (GOV_PHASE == 0) {
+            GOV_SAMPLES[GOV_N++] = fps;
+            if (GOV_N >= 12) {
+                float[] sorted = java.util.Arrays.copyOf(GOV_SAMPLES, GOV_N);
+                java.util.Arrays.sort(sorted);
+                float p30 = sorted[(int) (sorted.length * 0.4f)];
+                int[] caps = evenCaps(a);
+                int cap = caps[caps.length - 1];
+                for (int c : caps) {
+                    if (c <= p30 * 1.03f) {
+                        cap = c;
+                        break;
+                    }
+                }
+                applyFpsCap(a, cap);
+                GOV_PHASE = 1;
+                GOV_N = 0;
+                AppUtils.showToast(a, "Плавность: ровные " + cap + " FPS (игра даёт ~" + Math.round(p30) + "). Изменить: ☰ ▸ FPS");
+            }
+        } else if (GOV_CAP > 0) {
+            if (fps < GOV_CAP * 0.9f) GOV_LOW++;
+            else if (GOV_LOW > 0) GOV_LOW--;
+            if (GOV_LOW >= 6) {
+                GOV_LOW = 0;
+                int[] caps = evenCaps(a);
+                for (int c : caps) {
+                    if (c < GOV_CAP) {
+                        applyFpsCap(a, c);
+                        AppUtils.showToast(a, "Плавность: лимит снижен до " + c + " FPS");
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    private static TextView perfTitle(Context ctx, String text) {
+        TextView t = new TextView(ctx);
+        t.setText(text);
+        t.setTextColor(UI_TEXT);
+        t.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f);
+        t.setTypeface(Typeface.DEFAULT_BOLD);
+        t.setPadding(0, dp(ctx, 10), 0, dp(ctx, 2));
+        return t;
+    }
+
+    private static TextView perfHint(Context ctx, String text) {
+        TextView t = new TextView(ctx);
+        t.setText(text);
+        t.setTextColor(UI_TEXT_DIM);
+        t.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f);
+        t.setPadding(0, 0, 0, dp(ctx, 4));
+        return t;
+    }
+
+    /** Ряд кнопок-переключателей; выбранная подсвечивается. */
+    private static View perfChips(Context ctx, String[] labels, int[] values, int current, java.util.function.IntConsumer onPick) {
+        HorizontalScrollView hsv = new HorizontalScrollView(ctx);
+        hsv.setHorizontalScrollBarEnabled(false);
+        LinearLayout row = new LinearLayout(ctx);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        final Button[] buttons = new Button[labels.length];
+        for (int i = 0; i < labels.length; i++) {
+            final int idx = i;
+            Button b = hudButton(ctx, labels[i]);
+            buttons[i] = b;
+            setHudActive(ctx, b, values[i] == current);
+            b.setOnClickListener(v -> {
+                for (int j = 0; j < buttons.length; j++) setHudActive(ctx, buttons[j], j == idx);
+                onPick.accept(values[idx]);
+            });
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(ctx, 36));
+            lp.rightMargin = dp(ctx, 6);
+            row.addView(b, lp);
+        }
+        hsv.addView(row);
+        return hsv;
+    }
+
+    private static int allCoresMask() {
+        int n = Math.max(1, Math.min(16, Runtime.getRuntime().availableProcessors()));
+        return (1 << n) - 1;
+    }
+
+    /** Панель «Производительность»: ровные кадры, оверлей, ядра, режим Unity, сведения об устройстве. */
+    public static void showPerformancePanel(final XServerDisplayActivity activity, final Container container) {
+        final Context ctx = activity;
+        LinearLayout root = new LinearLayout(ctx);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setPadding(dp(ctx, 18), dp(ctx, 4), dp(ctx, 18), dp(ctx, 6));
+
+        root.addView(perfTitle(ctx, "Ровные кадры (лимит FPS)"));
+        root.addView(perfHint(ctx, "Дёрганье — это когда кадры висят на экране то 2, то 3 такта. Лимит, кратный частоте экрана, "
+            + "делает их ровными. «Авто» сам подбирает самый высокий лимит, который игра держит. Работает сразу, без перезапуска."));
+        root.addView(perfChips(ctx, new String[]{"Авто", "30", "40", "45", "60", "Без лимита"}, new int[]{FPS_AUTO, 30, 40, 45, 60, 0},
+            getFpsMode(activity), v -> setFpsMode(activity, v)));
+
+        root.addView(perfTitle(ctx, "Оверлей FPS"));
+        final FrameRating fr = activity.getFrameRating();
+        int ov = fr == null || !fr.isShowOverlay() ? 0 : (fr.getMode() == FrameRating.Mode.FULL ? 2 : 1);
+        root.addView(perfChips(ctx, new String[]{"Выкл", "Простой", "Подробный"}, new int[]{0, 1, 2}, ov, v -> {
+            if (fr == null) return;
+            byte mode;
+            if (v == 0) {
+                fr.setShowOverlay(false);
+                mode = (byte) FrameRating.Mode.DISABLED.ordinal();
+            } else {
+                fr.setMode(v == 2 ? FrameRating.Mode.FULL : FrameRating.Mode.SIMPLE);
+                fr.setShowOverlay(true);
+                mode = (byte) (v == 2 ? FrameRating.Mode.FULL : FrameRating.Mode.SIMPLE).ordinal();
+            }
+            try {
+                if (container != null) {
+                    container.setHUDMode(mode);
+                    container.saveData();
+                }
+            } catch (Throwable ignored) {}
+        }));
+
+        final int fastMask = fastCoresMask();
+        if (fastMask != 0) {
+            root.addView(perfTitle(ctx, "Ядра процессора"));
+            root.addView(perfHint(ctx, "«Быстрые» (" + maskToList(fastMask) + ") — меньше рывков; «Все» — больше потоков. Применяется сразу."));
+            root.addView(perfChips(ctx, new String[]{"Быстрые", "Все"}, new int[]{1, 0}, isFastCoresEnabled(activity) ? 1 : 0, v -> {
+                try {
+                    PreferenceManager.getDefaultSharedPreferences(activity).edit().putBoolean("fast_cores_" + gamePrefSuffix(activity), v == 1).apply();
+                    File exe = activity.getLaunchTargetExe();
+                    WinHandler wh = activity.getWinHandler();
+                    if (exe != null && wh != null) wh.setProcessAffinity(exe.getName().toLowerCase(Locale.ROOT), v == 1 ? fastMask : allCoresMask());
+                } catch (Throwable ignored) {}
+            }));
+        }
+
+        if (activity.unityLevel >= 0 && activity.getLaunchTargetExe() != null) {
+            final File exe = activity.getLaunchTargetExe();
+            root.addView(perfTitle(ctx, "Режим Unity (со следующего запуска)"));
+            root.addView(perfHint(ctx, "«Скорость» — быстрее всего, «Стабильность» — если игра вылетает. Защита от вылета включена во всех режимах."));
+            root.addView(perfChips(ctx, new String[]{"Скорость", "Баланс", "Стабильность"}, new int[]{UNITY_SPEED, UNITY_BALANCE, UNITY_STABLE},
+                getUnityLevel(activity, exe), v -> setUnityLevel(activity, exe, v)));
+        }
+
+        StringBuilder info = new StringBuilder();
+        float[] rates = supportedRefreshRates(activity);
+        info.append("Экран: ").append(Math.round(currentRefresh(activity))).append(" Гц (доступно:");
+        for (float r : rates) info.append(' ').append(Math.round(r));
+        info.append(")\n");
+        try {
+            String gpu = GPUHelper.glGetRenderer(activity);
+            if (gpu != null && !gpu.isEmpty()) info.append("GPU: ").append(gpu).append('\n');
+        } catch (Throwable ignored) {}
+        try {
+            String soc = Build.VERSION.SDK_INT >= 31 ? (Build.SOC_MANUFACTURER + " " + Build.SOC_MODEL) : Build.HARDWARE;
+            info.append("Процессор: ").append(soc).append(" • ядер: ").append(Runtime.getRuntime().availableProcessors()).append('\n');
+        } catch (Throwable ignored) {}
+        info.append("Сейчас: ").append(PresentExtension.fpsLimit > 0 ? "лимит " + PresentExtension.fpsLimit + " FPS" : "без лимита")
+            .append(" • кэш кода Box64 включён");
+        TextView tvInfo = perfHint(ctx, info.toString());
+        tvInfo.setPadding(0, dp(ctx, 12), 0, 0);
+        root.addView(tvInfo);
+
+        ScrollView scroll = new ScrollView(ctx);
+        scroll.addView(root);
+        new AlertDialog.Builder(ctx)
+            .setTitle("Производительность")
+            .setView(scroll)
+            .setPositiveButton("Готово", null)
+            .setNeutralButton("Тест FPS", (d, w) -> showFpsBenchmarkDialog(activity, container))
+            .show();
     }
 
     public static void ensureRichControlPresetsInstalled(Context context) {
