@@ -71,8 +71,12 @@ public class DXVKConfigDialog extends ContentDialog {
     }
 
     public static void setEnvVars(Context context, KeyValueSet config, EnvVars envVars) {
-        String ver = config.get("version", DefaultVersion.HYBRID_DXVK);
-        if (ver.contains("async") || ver.contains("hybrid") || ver.contains("1.7.2")) {
+        String ver = config.get("version", DefaultVersion.HYBRID_DXVK).toLowerCase(java.util.Locale.ROOT);
+        // Do not leak async switches from the container into sync/hybrid games. These variables
+        // are meaningful only for the bundled GPL-async build.
+        envVars.remove("DXVK_ASYNC");
+        envVars.remove("DXVK_GPLASYNCCACHE");
+        if (ver.contains("gplasync")) {
             envVars.put("DXVK_ASYNC", "1");
             envVars.put("DXVK_GPLASYNCCACHE", "1");
         }
@@ -96,9 +100,6 @@ public class DXVKConfigDialog extends ContentDialog {
         if (!maxDeviceMemory.isEmpty() && !maxDeviceMemory.equals("0")) {
             content += "dxgi.maxDeviceMemory = "+maxDeviceMemory+"\n";
             content += "dxgi.maxSharedMemory = "+maxDeviceMemory+"\n";
-        } else {
-            content += "dxgi.maxDeviceMemory = 4096\n";
-            content += "dxgi.maxSharedMemory = 4096\n";
         }
 
         String framerate = config.get("framerate");
@@ -120,18 +121,13 @@ public class DXVKConfigDialog extends ContentDialog {
             content += "d3d9.customDeviceDesc = \""+parts[2]+"\"\n";
         }
 
-        content += "d3d11.maxFeatureLevel = 11_1\n";
-        content += "d3d11.relaxedBarriers = True\n";
-        content += "d3d11.ignoreGraphicsBarriers = True\n";
-        content += "dxvk.enableAsync = True\n";
-        content += "dxvk.gplAsyncCache = True\n";
-        content += "d3d9.deferSurfaceCreation = True\n";
-        content += "d3d11.dcSingleUseMode = False\n";
-        content += "d3d11.constantBufferRangeCheck = \"True\"\n\n";
-
-        content += "[GTA5.exe]\n";
-        content += "dxgi.maxDeviceMemory = 512\n";
-        content += "dxgi.maxSharedMemory = 512\n";
+        // Async-specific options are emitted only for the async package. Avoid forcing relaxed or
+        // ignored barriers globally: that can create rendering artifacts or hangs on mobile GPUs.
+        if (config.get("version", DefaultVersion.HYBRID_DXVK).toLowerCase(java.util.Locale.ROOT).contains("gplasync")) {
+            content += "dxvk.enableAsync = True\n";
+            content += "dxvk.gplAsyncCache = True\n";
+        }
+        content += "d3d11.constantBufferRangeCheck = True\n";
         return content;
     }
 }
