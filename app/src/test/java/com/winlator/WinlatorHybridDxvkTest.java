@@ -39,6 +39,14 @@ public class WinlatorHybridDxvkTest {
     }
 
     @Test
+    public void testCompatAsyncDxvkBundled() {
+        assertEquals("1.10.3-async", DefaultVersion.ASYNC_DXVK_COMPAT);
+        assertTrue(com.winlator.core.GeneralComponents.getBuiltinComponentNames(com.winlator.core.GeneralComponents.Type.DXVK).contains(DefaultVersion.ASYNC_DXVK_COMPAT));
+        String rel = "src/main/assets/dxwrapper/dxvk-" + DefaultVersion.ASYNC_DXVK_COMPAT + ".tzst";
+        assertTrue(new java.io.File(rel).isFile() || new java.io.File("app/" + rel).isFile());
+    }
+
+    @Test
     public void testPanvkMaliDriverBundled() {
         assertEquals("0.1.0-rc3lm", DefaultVersion.PANVK);
         String rel = "src/main/assets/graphics_driver/panvk-" + DefaultVersion.PANVK + ".tzst";

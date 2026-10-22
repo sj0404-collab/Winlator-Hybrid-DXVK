@@ -2150,6 +2150,7 @@ public class WinlatorProSuite {
                 fpsGovernorTick(activity, fps);
                 long sinceStart = android.os.SystemClock.elapsedRealtime() - hudStartMs;
                 if (fps >= 0.5f) {
+                    hudFramesSeen = true;
                     if (!firstFrameSeen[0]) firstFrameAt[0] = android.os.SystemClock.elapsedRealtime();
                     firstFrameSeen[0] = true;
                     if (!driverChecked[0] && activity.panvkLaunch > 0 && android.os.SystemClock.elapsedRealtime() - firstFrameAt[0] > 4000L) {
@@ -2515,7 +2516,7 @@ public class WinlatorProSuite {
             if (container != null) {
                 sb.append("DX-обёртка: ").append(container.getDXWrapper()).append(" • Box64 пресет контейнера: ").append(container.getBox64Preset()).append('\n');
                 sb.append("Видео: ").append(activity != null && activity.panvkLaunch > 0 ? ("PanVK (Mali напрямую" + (activity.panvkLaunch == 2 ? ", DRI3)" : ", SHM)")) : "по настройке контейнера (Vortek/Turnip)")
-                    .append(" • DXVK: ").append(activity != null && activity.asyncDxvkLaunch ? "асинхронный 2.4.1-gplasync" : "по настройке контейнера").append('\n');
+                    .append(" • DXVK: ").append(activity != null && activity.asyncDxvkLaunch ? ("асинхронный " + activity.asyncDxvkVersion) : "по настройке контейнера").append('\n');
             }
             sb.append("Устройство: ").append(Build.MANUFACTURER).append(' ').append(Build.MODEL).append(" • Android ").append(Build.VERSION.RELEASE).append('\n');
         } catch (Throwable ignored) {}
@@ -2879,21 +2880,32 @@ public class WinlatorProSuite {
     // ===================== v12.6.3: ровные кадры, панель производительности =====================
     public static final int FPS_AUTO = -1;
 
-    /** v12.6.4: асинхронный DXVK для игры. По умолчанию включён; после вылета на нём — выключается автоматически. */
-    public static boolean useAsyncDxvk(Context ctx, File exe) {
-        if (ctx == null || exe == null) return false;
+    /**
+     * v12.7.1: DXVK для игры: 1 — асинхронный 1.10.3 (совместимый, по умолчанию), 2 — асинхронный 2.4.1-gplasync,
+     * 0 — обычный (гибрид). Ключ dxvk_mode2_ новый: решения 12.6.4/12.7.0 принимались на DXVK 2.4, который на Mali не запускался.
+     */
+    public static int dxvkMode(Context ctx, File exe) {
+        if (ctx == null || exe == null) return 0;
         try {
-            return PreferenceManager.getDefaultSharedPreferences(ctx).getBoolean("dxvk_async_" + gameWindowKey(exe.getName()), true);
+            return PreferenceManager.getDefaultSharedPreferences(ctx).getInt("dxvk_mode2_" + gameWindowKey(exe.getName()), 1);
         } catch (Throwable t) {
-            return false;
+            return 0;
         }
     }
 
-    public static void setAsyncDxvk(Context ctx, File exe, boolean on) {
+    public static void setDxvkMode(Context ctx, File exe, int mode) {
         if (ctx == null || exe == null) return;
         try {
-            PreferenceManager.getDefaultSharedPreferences(ctx).edit().putBoolean("dxvk_async_" + gameWindowKey(exe.getName()), on).apply();
+            PreferenceManager.getDefaultSharedPreferences(ctx).edit().putInt("dxvk_mode2_" + gameWindowKey(exe.getName()), mode).apply();
         } catch (Throwable ignored) {}
+    }
+
+    public static boolean useAsyncDxvk(Context ctx, File exe) {
+        return dxvkMode(ctx, exe) > 0;
+    }
+
+    public static void setAsyncDxvk(Context ctx, File exe, boolean on) {
+        setDxvkMode(ctx, exe, on ? 1 : 0);
     }
 
     /** После вылета: сначала откатываем асинхронный DXVK (если он был), иначе — режим Unity на ступень надёжнее. */
@@ -2952,7 +2964,7 @@ public class WinlatorProSuite {
     public static int maliDriverMode(Context ctx, File exe) {
         if (ctx == null || !isMaliDevice()) return 0;
         try {
-            return PreferenceManager.getDefaultSharedPreferences(ctx).getInt("mali_driver_" + maliKey(exe), 2);
+            return PreferenceManager.getDefaultSharedPreferences(ctx).getInt("mali_drv2_" + maliKey(exe), 2);
         } catch (Throwable t) {
             return 0;
         }
@@ -2961,7 +2973,7 @@ public class WinlatorProSuite {
     public static void setMaliDriverMode(Context ctx, File exe, int mode) {
         if (ctx == null) return;
         try {
-            PreferenceManager.getDefaultSharedPreferences(ctx).edit().putInt("mali_driver_" + maliKey(exe), mode).apply();
+            PreferenceManager.getDefaultSharedPreferences(ctx).edit().putInt("mali_drv2_" + maliKey(exe), mode).apply();
         } catch (Throwable ignored) {}
     }
 
@@ -3310,10 +3322,12 @@ public class WinlatorProSuite {
         if (activity.getLaunchTargetExe() != null) {
             final File dexe = activity.getLaunchTargetExe();
             root.addView(perfTitle(ctx, "DXVK (со следующего запуска)"));
-            root.addView(perfHint(ctx, "«Асинхронный» (2.4.1-gplasync) компилирует шейдеры в фоне — нет рывков, когда в игре появляются "
-                + "новые эффекты. «Обычный» — прежний гибрид 1.7.2/2.4.1. Сейчас работает: " + (activity.asyncDxvkLaunch ? "асинхронный" : "обычный") + "."));
-            root.addView(perfChips(ctx, new String[]{"Асинхронный", "Обычный"}, new int[]{1, 0}, useAsyncDxvk(activity, dexe) ? 1 : 0,
-                v -> setAsyncDxvk(activity, dexe, v == 1)));
+            String dxNow = activity.asyncDxvkLaunch ? ("асинхронный " + activity.asyncDxvkVersion) : "обычный (гибрид)";
+            root.addView(perfHint(ctx, "«Асинхр. 1.10» — DXVK 1.10.3, шейдеры компилируются в фоне (меньше рывков); работает на Vortek/Mali, по умолчанию. "
+                + "«Асинхр. 2.4» — новее, но нужен драйвер с полным Vulkan 1.3 (PanVK/Adreno), иначе игра не запустит графику. "
+                + "«Обычный» — гибрид 1.7.2/2.4.1, как в 12.6.3. Если графика не запустится, следующий запуск сам перейдёт на ступень надёжнее. Сейчас: " + dxNow + "."));
+            root.addView(perfChips(ctx, new String[]{"Асинхр. 1.10", "Асинхр. 2.4", "Обычный"}, new int[]{1, 2, 0}, dxvkMode(activity, dexe),
+                v -> setDxvkMode(activity, dexe, v)));
         }
 
         StringBuilder info = new StringBuilder();
@@ -3443,6 +3457,109 @@ public class WinlatorProSuite {
         } catch (Throwable t) {
             icv.setVisibility(View.GONE);
         }
+    }
+
+    // ===================== v12.7.1: графика не запустилась (окно Unity «Error» до первых кадров) =====================
+    private static volatile boolean hudFramesSeen = false;
+    private static volatile boolean gfxFailShown = false;
+
+    private static boolean isUnityInitErrorTitle(String title) {
+        String t = title.trim().toLowerCase(Locale.ROOT);
+        return t.equals("error") || t.equals("fatal error") || t.startsWith("failed to initialize");
+    }
+
+    /** Ступень надёжнее после отказа графики: DXVK 2.4 → 1.10 → обычный; затем PanVK → Vortek. */
+    private static String stepDownAfterGfxFail(XServerDisplayActivity activity) {
+        try {
+            File exe = activity != null ? activity.getLaunchTargetExe() : null;
+            if (activity != null && activity.asyncDxvkLaunch && exe != null) {
+                int m = dxvkMode(activity, exe);
+                if (m == 2) {
+                    setDxvkMode(activity, exe, 1);
+                    return "Что сделано: следующий запуск — асинхронный DXVK 1.10.3 (совместимый): DXVK 2.4 этот видеодрайвер не тянет.\n\n";
+                }
+                if (m == 1) {
+                    setDxvkMode(activity, exe, 0);
+                    return "Что сделано: следующий запуск — обычный DXVK (гибрид, как в 12.6.3).\n\n";
+                }
+            }
+            if (activity != null && activity.panvkLaunch > 0 && maliDriverMode(activity, exe) > 0) {
+                setMaliDriverMode(activity, exe, 0);
+                return "Что сделано: следующий запуск — через Vortek (PanVK не смог запустить графику).\n\n";
+            }
+        } catch (Throwable ignored) {}
+        return "Автоматически менять больше нечего — пришлите, пожалуйста, этот лог.\n\n";
+    }
+
+    /** Из логов DXVK: версия, найденные видеокарты/драйверы, ошибки запуска устройства; плюс лог Mesa от PanVK. */
+    static String dxvkLogSummary(XServerDisplayActivity a) {
+        StringBuilder out = new StringBuilder();
+        try {
+            File exe = a.getLaunchTargetExe();
+            File dir = new File(com.winlator.xenvironment.RootFS.find(a).getRootDir(), com.winlator.xenvironment.RootFS.USER_CACHE_PATH);
+            String base = exe != null ? exe.getName().replaceAll("(?i)\\.exe$", "").toLowerCase(Locale.ROOT) + "_" : null;
+            File[] logs = dir.listFiles((d, name) -> name.endsWith(".log") && (name.contains("_dxgi") || name.contains("_d3d")));
+            java.util.LinkedHashSet<String> lines = new java.util.LinkedHashSet<>();
+            if (logs != null) {
+                long now = System.currentTimeMillis();
+                for (File f : logs) {
+                    boolean mine = base != null && f.getName().toLowerCase(Locale.ROOT).startsWith(base);
+                    if (!mine && now - f.lastModified() > 10 * 60 * 1000L) continue;
+                    String v = com.winlator.core.FileUtils.readString(f);
+                    if (v == null) continue;
+                    String prev = "";
+                    for (String ln : v.split("\n")) {
+                        String t = ln.trim();
+                        boolean dev = t.contains("Driver") || t.contains("Vulkan:") || t.contains("Vulkan :");
+                        if (t.startsWith("info:  DXVK: v") || t.startsWith("err:") || dev || (t.startsWith("warn:") && lines.size() < 30)) {
+                            if (dev && prev.startsWith("info:") && prev.endsWith(":")) lines.add(prev);
+                            lines.add(t);
+                        }
+                        prev = t;
+                    }
+                }
+            }
+            if (!lines.isEmpty()) {
+                out.append("== Лог DXVK (запуск устройства) ==\n");
+                int n = 0;
+                for (String l : lines) {
+                    if (n++ >= 45) break;
+                    out.append(l).append('\n');
+                }
+                out.append('\n');
+            } else {
+                out.append("== Лог DXVK пуст: DXVK не дошёл до создания устройства ==\n\n");
+            }
+            File mesa = new File(dir, "panvk_mesa.log");
+            if (mesa.isFile()) {
+                String v = com.winlator.core.FileUtils.readString(mesa);
+                if (v != null && !v.trim().isEmpty()) {
+                    String[] ls = v.trim().split("\n");
+                    out.append("== Лог Mesa (PanVK) ==\n");
+                    for (int i = Math.max(0, ls.length - 20); i < ls.length; i++) out.append(ls[i]).append('\n');
+                    out.append('\n');
+                }
+            }
+        } catch (Throwable ignored) {}
+        return out.toString();
+    }
+
+    /** Окно Unity «Error / Failed to initialize player» до первых кадров: закрываем игру, откатываем ступень, показываем причину. */
+    private static void handleGfxInitFailure(final XServerDisplayActivity activity, final Container container, final String gameName) {
+        final Handler h = new Handler(Looper.getMainLooper());
+        AppUtils.showToast(activity, "Игра не смогла запустить графику — собираю причину…");
+        h.postDelayed(() -> BG.execute(() -> {
+            final String report = buildReportHeader(activity, container, gameName)
+                + "Игра не смогла запустить графику Direct3D 11 (окно «Failed to initialize player»).\n"
+                + stepDownAfterGfxFail(activity) + dxvkLogSummary(activity) + collectUnityCrashReport(container);
+            final File saved = saveReportToDownloads(gameName, report);
+            try {
+                WinHandler wh = activity.getWinHandler();
+                if (wh != null && gameName != null) wh.killProcess(gameName);
+            } catch (Throwable ignored) {}
+            h.post(() -> showUnityCrashDialog(activity, report + (saved != null ? "\nЛог сохранён: " + saved.getAbsolutePath() + "\n" : "")
+                + "\nЗапустите игру снова — настройки уже изменены."));
+        }), 1500);
     }
 
     /** Окно UnityCrashHandler = игра упала. Даём ему 3 с дописать error.log, закрываем и показываем причину. */
@@ -4128,6 +4245,8 @@ public class WinlatorProSuite {
         unityCrashShown = false;
         gameWindowSeen = false;
         gameMissingTicks = 0;
+        hudFramesSeen = false;
+        gfxFailShown = false;
         final Handler handler = new Handler(Looper.getMainLooper());
         activeWatchdogHandler = handler;
 
@@ -4142,6 +4261,7 @@ public class WinlatorProSuite {
                     int mappedWindows = 0;
                     final boolean[] crashSeen = {false, false}; // [0] окно сбоя найдено, [1] сканирование прошло
                     final boolean[] gameNow = {false};
+                    final boolean[] gfxFail = {false};
                     final int[] gamePid = {0};
                     final String targetBase = gameWindowKey(targetExeName);
                     try {
@@ -4162,6 +4282,8 @@ public class WinlatorProSuite {
                                         else if (!targetBase.isEmpty() && cls != null && cls.toLowerCase(Locale.ROOT).contains(targetBase)) {
                                             gameNow[0] = true;
                                             if (gamePid[0] <= 0) gamePid[0] = w.getProcessId();
+                                            // v12.7.1: окно игры «Error» до первых кадров = графика не запустилась
+                                            if (!hudFramesSeen && nm != null && w.attributes.isMapped() && isUnityInitErrorTitle(nm)) gfxFail[0] = true;
                                         }
                                     }
                                 }
@@ -4177,6 +4299,12 @@ public class WinlatorProSuite {
                         String wdText = "⠿  " + targetExeName + " · " + String.format(Locale.US, "%.1f", ramMb / 1024f) + " ГБ своб.";
                         if (!wdText.contentEquals(tvWatchdog.getText())) tvWatchdog.setText(wdText);
                         tvWatchdog.setTextColor(UI_TEXT_DIM);
+                        if (gfxFail[0] && !gfxFailShown && !unityCrashShown) {
+                            gfxFailShown = true;
+                            gameWindowSeen = false;
+                            handleGfxInitFailure(activity, container, targetExeName);
+                            return;
+                        }
                         if (crashSeen[0] && !unityCrashShown) {
                             unityCrashShown = true;
                             gameWindowSeen = false;

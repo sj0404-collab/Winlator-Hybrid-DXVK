@@ -123,6 +123,8 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
     public volatile boolean asyncDxvkLaunch = false;
     /** v12.7: 0 — Vortek/другой драйвер, 1 — PanVK + SHM, 2 — PanVK + DRI3 (Mali напрямую). */
     public volatile int panvkLaunch = 0;
+    /** v12.7.1: какой асинхронный DXVK в этом запуске ("" — обычный). */
+    public volatile String asyncDxvkVersion = "";
     private Runnable editInputControlsCallback;
     private Shortcut shortcut;
     private PreloaderDialog preloaderDialog;
@@ -941,6 +943,9 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
                 panvkLaunch = maliMode;
                 envVars.put("VK_ICD_FILENAMES", icdBase + "/panfrost_icd.aarch64.json:" + icdBase + "/vortek_icd.aarch64.json");
                 if (maliMode == 2) envVars.put("PANVK_KBASE_DRI3", "raw");
+                File panvkLog = new File(rootFS.getRootDir(), RootFS.USER_CACHE_PATH + "/panvk_mesa.log");
+                FileUtils.delete(panvkLog);
+                envVars.put("MESA_LOG_FILE", panvkLog.getAbsolutePath());
                 envVars.put("DXVK_LOG_LEVEL", "info");
                 envVars.put("DXVK_LOG_PATH", RootFS.getDosUserCachePath());
                 com.winlator.pro.WinlatorProSuite.clearDxvkLogs(rootFS.getRootDir(), resolveEarlyTargetExe());
@@ -1026,19 +1031,27 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
             }
         }
 
-        // v12.6.4: настоящий асинхронный DXVK (2.4.1-gplasync) вместо гибрида — шейдеры в фоне, без рывков.
+        // v12.7.1: асинхронный DXVK — по умолчанию совместимый 1.10.3-async (DXVK 1.x работает на Vortek/Mali);
+        // 2.4.1-gplasync — по выбору (нужен драйвер с полным Vulkan 1.3: PanVK/Turnip).
         asyncDxvkLaunch = false;
+        asyncDxvkVersion = "";
         if (dxwrapper.equals(DXWrappers.DXVK) && requestedDxvkVer.equals(DefaultVersion.HYBRID_DXVK)) {
             File earlyExe = resolveEarlyTargetExe();
-            if (earlyExe != null && com.winlator.pro.WinlatorProSuite.useAsyncDxvk(this, earlyExe)) {
-                requestedDxvkVer = DefaultVersion.ASYNC_DXVK;
+            int dxvkMode = earlyExe != null ? com.winlator.pro.WinlatorProSuite.dxvkMode(this, earlyExe) : 0;
+            if (dxvkMode > 0) {
+                requestedDxvkVer = dxvkMode == 2 ? DefaultVersion.ASYNC_DXVK : DefaultVersion.ASYNC_DXVK_COMPAT;
                 dxwrapperConfig[0].put("version", requestedDxvkVer);
                 asyncDxvkLaunch = true;
+                asyncDxvkVersion = requestedDxvkVer;
             }
         }
 
         if (dxwrapper.equals(DXWrappers.DXVK)) {
             DXVKConfigDialog.setEnvVars(this, dxwrapperConfig[0], envVars);
+            // v12.7.1: лог запуска DXVK (видеокарта, драйвер, ошибки) — если графика не поднимется, причина попадёт в отчёт
+            envVars.put("DXVK_LOG_LEVEL", "info");
+            envVars.put("DXVK_LOG_PATH", RootFS.getDosUserCachePath());
+            com.winlator.pro.WinlatorProSuite.clearDxvkLogs(rootFS.getRootDir(), resolveEarlyTargetExe());
             envVars.put("WINEDLLOVERRIDES", "mscoree,mshtml=d;d3d11,dxgi,d3d10core,d3d10,d3d10_1,d3d9,d3d8,d3dcompiler_47,d3dcompiler_46,d3dcompiler_43=n,b");
             cacheId += dxwrapper+"-"+requestedDxvkVer;
         }
