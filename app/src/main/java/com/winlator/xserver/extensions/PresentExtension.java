@@ -113,10 +113,13 @@ public class PresentExtension extends Extension implements WindowManager.OnWindo
         final long frameTime = 1000000000L / (limit > 0 ? limit : 60);
         long now = System.nanoTime();
 
-        long lastIdleTime = (long)window.getTag("lastIdleTime", now);
-        lastIdleTime = lastIdleTime <= (now - frameTime) ? now + frameTime : lastIdleTime + frameTime;
-        long delayNanos = lastIdleTime - now;
-        window.setTag("lastIdleTime", lastIdleTime);
+        // v12.7.3: только «не чаще лимита». Опоздавший кадр отдаём игре сразу — без лишнего ожидания целого кадра
+        // (прежняя схема при FPS чуть ниже лимита добавляла ещё frameTime и роняла 30 → 15–20 FPS).
+        long lastIdleTime = (long)window.getTag("lastIdleTime", now - frameTime);
+        long next = lastIdleTime + frameTime;
+        if (next < now) next = now;
+        long delayNanos = next - now;
+        window.setTag("lastIdleTime", next);
 
         if (idleNotifyScheduler == null) idleNotifyScheduler = Executors.newSingleThreadScheduledExecutor();
         idleNotifyScheduler.schedule(() -> sendIdleNotify(window, pixmap, serial, idleFence), delayNanos, TimeUnit.NANOSECONDS);
