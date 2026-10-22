@@ -82,6 +82,10 @@ public class GLRenderer implements GLSurfaceView.Renderer, WindowManager.OnWindo
 
     @Override
     public void onSurfaceCreated(GL10 gl, EGLConfig config) {
+        // v12.7.6: поток вывода кадров X-сервера — приоритет как у системного интерфейса (меньше задержек под нагрузкой)
+        try {
+            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY);
+        } catch (Throwable ignored) {}
         GPUHelper.setGlobalEGLContext();
 
         GLES20.glFrontFace(GLES20.GL_CCW);

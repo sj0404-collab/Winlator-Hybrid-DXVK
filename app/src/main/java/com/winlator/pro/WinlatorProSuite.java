@@ -1469,13 +1469,29 @@ public class WinlatorProSuite {
         root.addView(perfHint(context, "Плавность и лимит кадров — в «☰ ▸ FPS»: по умолчанию «Авто 30–60» держит ровные кадры, привязанные к частоте экрана."));
 
         if (container != null) {
-            final String[] resValues = {"800x600", "1024x768", "1280x720", "1366x768", "1600x900", "1920x1080"};
+            final String[] resValues = {"800x600", "960x540", "1024x768", "1280x720", "1366x768", "1600x900", "1920x1080"};
             int cur = -1;
             for (int i = 0; i < resValues.length; i++) {
                 if (resValues[i].equals(container.getScreenSize())) cur = i;
             }
             int[] idx = new int[resValues.length];
             for (int i = 0; i < idx.length; i++) idx[i] = i;
+            // v12.7.6: апскейл как FSR (идея DroidDeck): меньше пикселей для игры + настоящий шейдер резкости CAS
+            root.addView(perfTitle(context, "Апскейл как FSR (больше FPS)"));
+            root.addView(perfHint(context, "Игра рисуется в меньшем разрешении, картинка растягивается на экран с резкостью (CAS). "
+                + "Разрешение — со следующего запуска, резкость — сразу."));
+            final String[] upRes = {"", "1280x720", "960x540"};
+            int curUp = "960x540".equals(container.getScreenSize()) ? 2
+                : ("1280x720".equals(container.getScreenSize()) && prefs.getBoolean("pro_shader_cas", false) ? 1 : 0);
+            root.addView(perfChips(context, new String[]{"Выкл", "720p + резкость", "540p + резкость (макс. FPS)"}, new int[]{0, 1, 2}, curUp, v -> {
+                if (v > 0) {
+                    container.setScreenSize(upRes[v]);
+                    container.saveData();
+                }
+                prefs.edit().putBoolean("pro_shader_cas", v > 0).putInt("pro_shader_cas_val", v == 2 ? 80 : 65).apply();
+                if (act != null) applySavedShadersToRenderer(act);
+                AppUtils.showToast(context, v == 0 ? "Апскейл выключен" : "Апскейл: " + upRes[v] + " + резкость (разрешение — со следующего запуска)");
+            }));
             root.addView(perfTitle(context, "Разрешение игры (со следующего запуска)"));
             root.addView(perfHint(context, "Меньше — больше FPS. Сейчас: " + container.getScreenSize() + "."));
             root.addView(perfChips(context, resValues, idx, cur, v -> {
@@ -2958,6 +2974,57 @@ public class WinlatorProSuite {
         });
     }
 
+    /** v12.7.6: вернуть настройки этой игры к рекомендуемым (лимит, DXVK, драйвер, режим Unity, ядра, замеры). */
+    private static void resetGameSettings(XServerDisplayActivity a) {
+        try {
+            String k = "_" + gamePrefSuffix(a);
+            SharedPreferences p = PreferenceManager.getDefaultSharedPreferences(a);
+            SharedPreferences.Editor ed = p.edit();
+            for (String key : p.getAll().keySet()) {
+                if (key.endsWith(k)) ed.remove(key);
+            }
+            ed.apply();
+            GOV_MODE = Integer.MIN_VALUE;
+            AppUtils.showToast(a, "Настройки этой игры сброшены к рекомендуемым — полностью со следующего запуска");
+        } catch (Throwable ignored) {}
+    }
+
+    /** v12.7.6: журнал запуска и последний отчёт — в любое приложение (Telegram, почта…). */
+    private static void shareLatestLogs(final XServerDisplayActivity a) {
+        BG.execute(() -> {
+            StringBuilder sb = new StringBuilder();
+            try {
+                File dir = new File(Environment.getExternalStorageDirectory(), "Download/Winlator-logs");
+                File st = new File(dir, "startup.txt");
+                if (st.isFile()) {
+                    String t = FileUtils.readString(st);
+                    if (t != null) {
+                        String[] ls = t.split("\n");
+                        sb.append("== startup.txt (последние запуски) ==\n");
+                        for (int i = Math.max(0, ls.length - 10); i < ls.length; i++) sb.append(ls[i]).append('\n');
+                    }
+                }
+                File newest = null;
+                File[] fs = dir.listFiles();
+                if (fs != null) {
+                    for (File f : fs) {
+                        if (f.isFile() && !f.getName().equals("startup.txt") && (newest == null || f.lastModified() > newest.lastModified())) newest = f;
+                    }
+                }
+                if (newest != null) {
+                    String t = FileUtils.readString(newest);
+                    if (t != null) sb.append("\n== ").append(newest.getName()).append(" ==\n").append(t.length() > 60000 ? t.substring(t.length() - 60000) : t);
+                }
+            } catch (Throwable ignored) {}
+            final String text = sb.length() == 0 ? "Логов пока нет (Загрузки/Winlator-logs)" : sb.toString();
+            a.runOnUiThread(() -> {
+                try {
+                    a.startActivity(Intent.createChooser(new Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, text), "Логи Winlator"));
+                } catch (Throwable ignored) {}
+            });
+        });
+    }
+
     private static String panvkStatusText(Context ctx, File exe) {
         try {
             int st = PreferenceManager.getDefaultSharedPreferences(ctx).getInt("panvk_status2_" + maliKey(exe), -1);
@@ -3443,6 +3510,23 @@ public class WinlatorProSuite {
         TextView tvInfo = perfHint(ctx, info.toString());
         tvInfo.setPadding(0, dp(ctx, 12), 0, 0);
         root.addView(tvInfo);
+
+        // v12.7.6: сброс настроек игры и логи одной кнопкой
+        LinearLayout tools = new LinearLayout(ctx);
+        tools.setOrientation(LinearLayout.HORIZONTAL);
+        tools.setPadding(0, dp(ctx, 10), 0, 0);
+        Button btnReset = hudButton(ctx, "Сбросить настройки игры");
+        btnReset.setOnClickListener(v -> resetGameSettings(activity));
+        Button btnLogs = hudButton(ctx, "Поделиться логами");
+        btnLogs.setOnClickListener(v -> shareLatestLogs(activity));
+        LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(ctx, 36));
+        tlp.rightMargin = dp(ctx, 6);
+        tools.addView(btnReset, tlp);
+        tools.addView(btnLogs, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(ctx, 36)));
+        HorizontalScrollView toolsScroll = new HorizontalScrollView(ctx);
+        toolsScroll.setHorizontalScrollBarEnabled(false);
+        toolsScroll.addView(tools);
+        root.addView(toolsScroll);
 
         ScrollView scroll = new ScrollView(ctx);
         scroll.addView(root);

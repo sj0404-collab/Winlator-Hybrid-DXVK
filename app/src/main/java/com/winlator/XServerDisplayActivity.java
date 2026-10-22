@@ -1054,8 +1054,9 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
 
         if (dxwrapper.equals(DXWrappers.DXVK)) {
             DXVKConfigDialog.setEnvVars(this, dxwrapperConfig[0], envVars);
-            // v12.7.1: лог запуска DXVK (видеокарта, драйвер, ошибки) — если графика не поднимется, причина попадёт в отчёт
-            envVars.put("DXVK_LOG_LEVEL", "info");
+            // v12.7.1: лог запуска DXVK — если графика не поднимется, причина попадёт в отчёт
+            // v12.7.6: только предупреждения и ошибки (подробный уровень — лишняя работа в каждой игре)
+            envVars.put("DXVK_LOG_LEVEL", "warn");
             envVars.put("DXVK_LOG_PATH", RootFS.getDosUserCachePath());
             com.winlator.pro.WinlatorProSuite.clearDxvkLogs(rootFS.getRootDir(), resolveEarlyTargetExe());
             envVars.put("WINEDLLOVERRIDES", "mscoree,mshtml=d;d3d11,dxgi,d3d10core,d3d10,d3d10_1,d3d9,d3d8,d3dcompiler_47,d3dcompiler_46,d3dcompiler_43=n,b");

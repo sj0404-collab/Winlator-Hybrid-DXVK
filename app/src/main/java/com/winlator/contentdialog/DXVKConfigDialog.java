@@ -132,6 +132,11 @@ public class DXVKConfigDialog extends ContentDialog {
         content += "[GTA5.exe]\n";
         content += "dxgi.maxDeviceMemory = 512\n";
         content += "dxgi.maxSharedMemory = 512\n";
+        // v12.7.6: шейдеры компилирует не больше половины ядер (2–4 потока) — быстрые ядра остаются игре
+        int cores = Runtime.getRuntime().availableProcessors();
+        int compilers = Math.max(2, Math.min(4, cores / 2));
+        content += "dxvk.numCompilerThreads = " + compilers + "\n";
+        content += "dxvk.numAsyncThreads = " + Math.max(1, compilers - 1) + "\n";
         return content;
     }
 }
