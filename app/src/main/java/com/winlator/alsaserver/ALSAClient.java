@@ -7,7 +7,6 @@ import android.media.AudioTrack;
 
 import com.winlator.contentdialog.AudioDriverConfigDialog;
 import com.winlator.core.KeyValueSet;
-import com.winlator.math.Mathf;
 import com.winlator.sysvshm.SysVSharedMemory;
 
 import java.nio.ByteBuffer;
@@ -251,9 +250,14 @@ public class ALSAClient {
     }
 
     public static int latencyMillisToBufferSize(int latencyMillis, int channels, DataType dataType, int sampleRate) {
-        byte frameBytes = (byte)(channels * dataType.byteCount);
-        int bufferSize = (int)Mathf.roundTo((latencyMillis * sampleRate) / 1000.0f, framesPerBuffer, false);
-        return bufferSize * frameBytes;
+        if ((channels != 1 && channels != 2) || dataType == null || sampleRate < 8000 || sampleRate > 192000) return 0;
+        int clampedLatency = Math.max(12, Math.min(120, latencyMillis));
+        int frameBytes = channels * dataType.byteCount;
+        int quantum = Math.max(1, Math.min(4096, framesPerBuffer));
+        long requestedFrames = ((long)clampedLatency * sampleRate + 999L) / 1000L;
+        long roundedFrames = ((requestedFrames + quantum - 1) / quantum) * quantum;
+        long bytes = roundedFrames * frameBytes;
+        return bytes > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int)bytes;
     }
 
     private boolean isValidBufferSize() {

@@ -999,14 +999,16 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
             }
         }
 
-        // v12.6.4: настоящий асинхронный DXVK (2.4.1-gplasync) вместо гибрида — шейдеры в фоне, без рывков.
+        // Per-EXE profile overrides the default hybrid package only. Explicit container-level
+        // DXVK versions remain untouched so a manual compatibility choice is respected.
         asyncDxvkLaunch = false;
         if (dxwrapper.equals(DXWrappers.DXVK) && requestedDxvkVer.equals(DefaultVersion.HYBRID_DXVK)) {
             File earlyExe = resolveEarlyTargetExe();
-            if (earlyExe != null && com.winlator.pro.WinlatorProSuite.useAsyncDxvk(this, earlyExe)) {
-                requestedDxvkVer = DefaultVersion.ASYNC_DXVK;
+            if (earlyExe != null) {
+                int mode = com.winlator.pro.WinlatorProSuite.getDxvkProfile(this, earlyExe);
+                requestedDxvkVer = com.winlator.core.DxvkProfile.getVersion(mode);
                 dxwrapperConfig[0].put("version", requestedDxvkVer);
-                asyncDxvkLaunch = true;
+                asyncDxvkLaunch = mode == com.winlator.core.DxvkProfile.ASYNC;
             }
         }
 

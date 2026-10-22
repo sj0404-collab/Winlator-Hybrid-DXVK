@@ -61,6 +61,7 @@ import com.winlator.container.Container;
 import com.winlator.container.ContainerManager;
 import com.winlator.core.AppUtils;
 import com.winlator.core.FileUtils;
+import com.winlator.core.DxvkProfile;
 import com.winlator.core.KeyValueSet;
 import com.winlator.core.StringUtils;
 import com.winlator.core.TarCompressorUtils;
@@ -1554,7 +1555,7 @@ public class WinlatorProSuite {
         };
         final Spinner spSpeed = new Spinner(context);
         spSpeed.setAdapter(new ArrayAdapter<>(context, android.R.layout.simple_spinner_dropdown_item, speedModes));
-        spSpeed.setSelection(prefs.getInt("pro_speed_idx", 0));
+        spSpeed.setSelection(Math.max(0, Math.min(speedModes.length - 1, prefs.getInt("pro_speed_idx", 1))));
         spSpeed.setBackground(roundedBg(0xFF1E293B, 0xFF38BDF8, 1, 8, context));
         root.addView(spSpeed);
 
@@ -1680,10 +1681,10 @@ public class WinlatorProSuite {
 
                 if (speedIdx == 0) {
                     container.setBox64Preset("PERFORMANCE");
-                    container.setEnvVars("ZINK_DESCRIPTORS=lazy MESA_SHADER_CACHE_DISABLE=false MESA_SHADER_CACHE_MAX_SIZE=1024MB mesa_glthread=true WINEESYNC=1 WINEFSYNC=1 DXVK_ASYNC=1 BOX64_DYNAREC_BIGBLOCK=3 BOX64_DYNAREC_FASTNAN=1 BOX64_DYNAREC_STRONGMEM=0");
+                    container.setEnvVars("ZINK_DESCRIPTORS=lazy MESA_SHADER_CACHE_DISABLE=false MESA_SHADER_CACHE_MAX_SIZE=256MB mesa_glthread=true WINEESYNC=1 BOX64_DYNAREC_BIGBLOCK=3 BOX64_DYNAREC_FASTNAN=1 BOX64_DYNAREC_STRONGMEM=0");
                 } else if (speedIdx == 1) {
                     container.setBox64Preset("INTERMEDIATE");
-                    container.setEnvVars("ZINK_DESCRIPTORS=lazy MESA_SHADER_CACHE_DISABLE=false WINEESYNC=1 DXVK_ASYNC=1");
+                    container.setEnvVars("ZINK_DESCRIPTORS=lazy MESA_SHADER_CACHE_DISABLE=false MESA_SHADER_CACHE_MAX_SIZE=256MB mesa_glthread=true WINEESYNC=1");
                 } else {
                     container.setBox64Preset("COMPATIBILITY");
                     container.setEnvVars("WINEESYNC=1 BOX64_DYNAREC_STRONGMEM=1");
@@ -2865,21 +2866,35 @@ public class WinlatorProSuite {
     // ===================== v12.6.3: ровные кадры, панель производительности =====================
     public static final int FPS_AUTO = -1;
 
-    /** v12.6.4: асинхронный DXVK для игры. По умолчанию включён; после вылета на нём — выключается автоматически. */
-    public static boolean useAsyncDxvk(Context ctx, File exe) {
-        if (ctx == null || exe == null) return false;
+    /** DXVK mode is stored per full executable path so identical EXE names do not share settings. */
+    public static int getDxvkProfile(Context ctx, File exe) {
+        if (ctx == null || exe == null) return DxvkProfile.DEFAULT;
         try {
-            return PreferenceManager.getDefaultSharedPreferences(ctx).getBoolean("dxvk_async_" + gameWindowKey(exe.getName()), true);
-        } catch (Throwable t) {
-            return false;
-        }
+            SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(ctx);
+            String key = "dxvk_profile_" + DxvkProfile.preferenceKey(exe);
+            if (prefs.contains(key)) return DxvkProfile.normalize(prefs.getInt(key, DxvkProfile.DEFAULT));
+            // Migrate the previous boolean preference without making async the default.
+            String legacyKey = "dxvk_async_" + gameWindowKey(exe.getName());
+            if (prefs.contains(legacyKey)) return prefs.getBoolean(legacyKey, false) ? DxvkProfile.ASYNC : DxvkProfile.HYBRID;
+        } catch (Throwable ignored) {}
+        return DxvkProfile.DEFAULT;
+    }
+
+    public static void setDxvkProfile(Context ctx, File exe, int mode) {
+        if (ctx == null || exe == null) return;
+        try {
+            PreferenceManager.getDefaultSharedPreferences(ctx).edit()
+                .putInt("dxvk_profile_" + DxvkProfile.preferenceKey(exe), DxvkProfile.normalize(mode)).apply();
+        } catch (Throwable ignored) {}
+    }
+
+    /** Backward-compatible accessors used by crash recovery and existing callers. */
+    public static boolean useAsyncDxvk(Context ctx, File exe) {
+        return getDxvkProfile(ctx, exe) == DxvkProfile.ASYNC;
     }
 
     public static void setAsyncDxvk(Context ctx, File exe, boolean on) {
-        if (ctx == null || exe == null) return;
-        try {
-            PreferenceManager.getDefaultSharedPreferences(ctx).edit().putBoolean("dxvk_async_" + gameWindowKey(exe.getName()), on).apply();
-        } catch (Throwable ignored) {}
+        setDxvkProfile(ctx, exe, on ? DxvkProfile.ASYNC : DxvkProfile.HYBRID);
     }
 
     /** После вылета: сначала откатываем асинхронный DXVK (если он был), иначе — режим Unity на ступень надёжнее. */
@@ -2920,9 +2935,9 @@ public class WinlatorProSuite {
 
     public static boolean isFastCoresEnabled(XServerDisplayActivity a) {
         try {
-            return PreferenceManager.getDefaultSharedPreferences(a).getBoolean("fast_cores_" + gamePrefSuffix(a), true);
+            return PreferenceManager.getDefaultSharedPreferences(a).getBoolean("fast_cores_" + gamePrefSuffix(a), false);
         } catch (Throwable t) {
-            return true;
+            return false;
         }
     }
 
@@ -3179,11 +3194,15 @@ public class WinlatorProSuite {
 
         if (activity.getLaunchTargetExe() != null) {
             final File dexe = activity.getLaunchTargetExe();
-            root.addView(perfTitle(ctx, "DXVK (со следующего запуска)"));
-            root.addView(perfHint(ctx, "«Асинхронный» (2.4.1-gplasync) компилирует шейдеры в фоне — нет рывков, когда в игре появляются "
-                + "новые эффекты. «Обычный» — прежний гибрид 1.7.2/2.4.1. Сейчас работает: " + (activity.asyncDxvkLaunch ? "асинхронный" : "обычный") + "."));
-            root.addView(perfChips(ctx, new String[]{"Асинхронный", "Обычный"}, new int[]{1, 0}, useAsyncDxvk(activity, dexe) ? 1 : 0,
-                v -> setAsyncDxvk(activity, dexe, v == 1)));
+            root.addView(perfTitle(ctx, "DXVK-профиль для этой игры/программы (со следующего запуска)"));
+            int selectedDxvkProfile = getDxvkProfile(activity, dexe);
+            root.addView(perfHint(ctx, "Синхронный — DXVK 1.10.3 для Vulkan 1.1; гибридный — рекомендуемый для Vortek/Mali; "
+                + "GPL async 2.4.1 требует более нового Vulkan и может не запуститься на части Mali. Активен сейчас: "
+                + (activity.asyncDxvkLaunch ? "GPL async" : DxvkProfile.getLabel(selectedDxvkProfile)) + "."));
+            root.addView(perfChips(ctx,
+                new String[]{"Синхронный", "Асинхронный", "Гибридный"},
+                new int[]{DxvkProfile.SYNC, DxvkProfile.ASYNC, DxvkProfile.HYBRID}, selectedDxvkProfile,
+                v -> setDxvkProfile(activity, dexe, v)));
         }
 
         StringBuilder info = new StringBuilder();

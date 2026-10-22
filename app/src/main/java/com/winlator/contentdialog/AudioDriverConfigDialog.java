@@ -11,7 +11,8 @@ import com.winlator.widget.SeekBar;
 public class AudioDriverConfigDialog extends ContentDialog {
     public static final byte DEFAULT_PERFORMANCE_MODE = 1;
     public static final float DEFAULT_VOLUME = 1.0f;
-    public static final byte DEFAULT_LATENCY_MILLIS = 16;
+    // A modest queue is more resilient to Android scheduling jitter than an aggressive 16 ms buffer.
+    public static final byte DEFAULT_LATENCY_MILLIS = 32;
 
     public AudioDriverConfigDialog(final View anchor) {
         super(anchor.getContext(), R.layout.audio_driver_config_dialog);

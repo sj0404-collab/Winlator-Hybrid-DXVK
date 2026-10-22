@@ -2,6 +2,8 @@ package com.winlator;
 
 import com.winlator.core.DefaultVersion;
 import com.winlator.core.GeneralComponents;
+import com.winlator.core.DxvkProfile;
+import com.winlator.alsaserver.ALSAClient;
 import com.winlator.pro.WinlatorProSuite;
 import com.winlator.renderer.effects.CASSharpenEffect;
 import com.winlator.renderer.effects.HDRBloomEffect;
@@ -25,6 +27,27 @@ public class WinlatorHybridDxvkTest {
         assertEquals("1.7.2-2.4.1-hybrid", DefaultVersion.DXVK());
         assertEquals("1.7.2-2.4.1-hybrid", DefaultVersion.DXVK("turnip"));
         assertEquals("1.7.2-2.4.1-hybrid", DefaultVersion.DXVK("vortek"));
+    }
+
+    @Test
+    public void testPerExecutableDxvkProfilesAndAudioBufferPolicy() throws Exception {
+        assertEquals(DefaultVersion.MINOR_DXVK, DxvkProfile.getVersion(DxvkProfile.SYNC));
+        assertEquals(DefaultVersion.ASYNC_DXVK, DxvkProfile.getVersion(DxvkProfile.ASYNC));
+        assertEquals(DefaultVersion.HYBRID_DXVK, DxvkProfile.getVersion(DxvkProfile.HYBRID));
+        assertEquals(DxvkProfile.HYBRID, DxvkProfile.normalize(99));
+
+        File a = new File("/games/Alpha/game.exe");
+        File b = new File("/games/Beta/game.exe");
+        assertFalse("Same-named programs in separate folders must have separate profiles",
+            DxvkProfile.preferenceKey(a).equals(DxvkProfile.preferenceKey(b)));
+        assertEquals(DxvkProfile.preferenceKey(a), DxvkProfile.preferenceKey(new File("/games/Alpha/game.exe")));
+
+        int stableBuffer = ALSAClient.latencyMillisToBufferSize(32, 2, ALSAClient.DataType.S16LE, 48000);
+        int lowLatencyBuffer = ALSAClient.latencyMillisToBufferSize(16, 2, ALSAClient.DataType.S16LE, 48000);
+        assertTrue("A 32 ms audio queue must be larger than 16 ms to tolerate scheduling jitter",
+            stableBuffer > lowLatencyBuffer);
+        assertEquals("Malformed channel counts must not yield an invalid AudioTrack buffer", 0,
+            ALSAClient.latencyMillisToBufferSize(32, 6, ALSAClient.DataType.S16LE, 48000));
     }
 
     @Test
