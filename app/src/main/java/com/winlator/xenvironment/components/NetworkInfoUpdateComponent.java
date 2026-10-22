@@ -83,11 +83,11 @@ public class NetworkInfoUpdateComponent extends EnvironmentComponent {
                 }
             }
             java.util.List<String> all = new java.util.ArrayList<>(v4);
-            all.addAll(v6);
+            // v12.7.4: IPv6-DNS не используем — в Wine/rootfs он часто недоступен и тормозит старт
             for (String fb : new String[]{"1.1.1.1", "8.8.8.8"}) if (all.size() < 3 && !all.contains(fb)) all.add(fb);
             StringBuilder sb = new StringBuilder();
             for (int i = 0; i < all.size() && i < 3; i++) sb.append("nameserver ").append(all.get(i)).append('\n');
-            sb.append("options timeout:2 attempts:2\n");
+            sb.append("options timeout:1 attempts:2\n");
             FileUtils.writeString(new File(environment.getRootFS().getRootDir(), "etc/resolv.conf"), sb.toString());
         } catch (Throwable ignored) {}
     }

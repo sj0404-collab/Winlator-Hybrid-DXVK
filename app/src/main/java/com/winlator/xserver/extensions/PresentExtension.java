@@ -107,10 +107,12 @@ public class PresentExtension extends Extension implements WindowManager.OnWindo
      * Буфер кадра возвращается игре не чаще 1/fpsLimit — кадры идут ровно, без рывков 16/33 мс.
      */
     public static volatile int fpsLimit = 0;
+    /** v12.7.4: частота экрана (vsync-ритм без лимита) — 60/90/120 вместо жёстких 60. */
+    public static volatile int displayHz = 60;
 
     private void sendIdleNotifyScheduled(final Window window, final Pixmap pixmap, final int serial, final int idleFence) {
         final int limit = fpsLimit;
-        final long frameTime = 1000000000L / (limit > 0 ? limit : 60);
+        final long frameTime = 1000000000L / (limit > 0 ? limit : Math.max(30, displayHz));
         long now = System.nanoTime();
 
         // v12.7.3: только «не чаще лимита». Опоздавший кадр отдаём игре сразу — без лишнего ожидания целого кадра

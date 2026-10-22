@@ -1459,249 +1459,137 @@ public class WinlatorProSuite {
         final Container container,
         final XServerDisplayActivity liveActivityOrNull
     ) {
+        // v12.7.4: безопасное окно «Графика и FPS» вместо старой «Студии» (та затирала Box64/переменные контейнера → вылеты)
         final SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(context);
-        ScrollView scroll = new ScrollView(context);
-        scroll.setBackgroundColor(0xFF0B1120);
-
+        final XServerDisplayActivity act = liveActivityOrNull;
         LinearLayout root = new LinearLayout(context);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(context, 14), dp(context, 12), dp(context, 14), dp(context, 14));
-        scroll.addView(root);
+        root.setPadding(dp(context, 18), dp(context, 4), dp(context, 18), dp(context, 6));
 
-        TextView title = new TextView(context);
-        title.setText("🎨 Настройки Графики, FPS, Скорости + Комбинатор Шейдеров");
-        title.setTextColor(Color.WHITE);
-        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15.5f);
-        title.setTypeface(Typeface.DEFAULT_BOLD);
-        root.addView(title);
-
-        TextView sub = new TextView(context);
-        sub.setText("Настройте рендерер (Vulkan / OpenGL / Hybrid DXVK), лимит FPS, турбо-скорость процессора и включите сразу несколько шейдеров одновременно!");
-        sub.setTextColor(0xFF38BDF8);
-        sub.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f);
-        sub.setPadding(0, dp(context, 4), 0, dp(context, 10));
-        root.addView(sub);
-
-        TextView lblApi = new TextView(context);
-        lblApi.setText("1. Графический API и Драйвер (Vulkan / OpenGL / DXVK):");
-        lblApi.setTextColor(0xFFFACC15);
-        lblApi.setTypeface(Typeface.DEFAULT_BOLD);
-        root.addView(lblApi);
-
-        final String[] apiLabels = {
-            "🔥 Hybrid DXVK 1.7.2 + 2.4.1 (Vulkan Turnip/Vortek — Макс. FPS)",
-            "⚡ DXVK 2.4.1 Async (Vulkan 1.3 для современных 3D игр)",
-            "🛡️ DXVK 1.7.2 Legacy (Лёгкий Vulkan 1.1 для старых GPU)",
-            "🌐 WineD3D OpenGL ES 3.2 (Высокая совместимость для старых игр)",
-            "🖥️ VirGL + Zink OpenGL (Аппаратный OpenGL рендерер)"
-        };
-        final Spinner spApi = new Spinner(context);
-        spApi.setAdapter(new ArrayAdapter<>(context, android.R.layout.simple_spinner_dropdown_item, apiLabels));
-        spApi.setSelection(prefs.getInt("pro_gfx_api_idx", 0));
-        spApi.setBackground(roundedBg(0xFF1E293B, 0xFF38BDF8, 1, 8, context));
-        root.addView(spApi);
-
-        TextView lblRes = new TextView(context);
-        lblRes.setText("\n2. Разрешение экрана и чёткость:");
-        lblRes.setTextColor(0xFFFACC15);
-        lblRes.setTypeface(Typeface.DEFAULT_BOLD);
-        root.addView(lblRes);
-
-        final String[] resValues = {"800x600", "1024x768", "1280x720", "1366x768", "1600x900", "1920x1080"};
-        final Spinner spRes = new Spinner(context);
-        spRes.setAdapter(new ArrayAdapter<>(context, android.R.layout.simple_spinner_dropdown_item, resValues));
-        int currentResIdx = 2;
-        if (container != null) {
-            for (int i = 0; i < resValues.length; i++) {
-                if (resValues[i].equals(container.getScreenSize())) currentResIdx = i;
+        if (act != null) {
+            float[] rates = supportedRefreshRates(act);
+            int maxHz = 60;
+            for (float r : rates) maxHz = Math.max(maxHz, Math.round(r));
+            String[] hzLabels = new String[rates.length + 1];
+            int[] hzValues = new int[rates.length + 1];
+            hzLabels[0] = "Системная";
+            hzValues[0] = 0;
+            for (int i = 0; i < rates.length; i++) {
+                hzLabels[i + 1] = Math.round(rates[i]) + " Гц";
+                hzValues[i + 1] = Math.round(rates[i]);
             }
-        }
-        spRes.setSelection(currentResIdx);
-        spRes.setBackground(roundedBg(0xFF1E293B, 0xFF38BDF8, 1, 8, context));
-        root.addView(spRes);
+            root.addView(perfTitle(context, "Частота экрана (сразу)"));
+            root.addView(perfHint(context, "Сейчас " + Math.round(currentRefresh(act)) + " Гц. Если игра упирается в 60 кадров, выберите 90 или 120 Гц — "
+                + "потолок кадров поднимется (если телефон и игра потянут). Больше расход батареи."));
+            root.addView(perfChips(context, hzLabels, hzValues, getScreenHz(act), v -> setScreenHz(act, v)));
 
-        final int[] fpsLimitVal = {prefs.getInt("pro_fps_limit", 120)};
-        final TextView lblFps = new TextView(context);
-        lblFps.setText("\n3. Лимит частоты кадров (FPS): " + (fpsLimitVal[0] >= 240 ? "240 FPS (Без лимита)" : fpsLimitVal[0] + " FPS"));
-        lblFps.setTextColor(0xFF34D399);
-        lblFps.setTypeface(Typeface.DEFAULT_BOLD);
-        root.addView(lblFps);
-
-        SeekBar sbFps = new SeekBar(context);
-        sbFps.setMax(210);
-        sbFps.setProgress(Math.max(0, fpsLimitVal[0] - 30));
-        sbFps.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            @Override
-            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
-                fpsLimitVal[0] = 30 + progress;
-                lblFps.setText("\n3. Лимит частоты кадров (FPS): " + (fpsLimitVal[0] >= 240 ? "240 FPS (Без лимита)" : fpsLimitVal[0] + " FPS"));
-            }
-            @Override public void onStartTrackingTouch(SeekBar seekBar) {}
-            @Override public void onStopTrackingTouch(SeekBar seekBar) {}
-        });
-        root.addView(sbFps);
-
-        TextView lblSpeed = new TextView(context);
-        lblSpeed.setText("\n4. Скорость работы CPU / Box64 Dynarec и ESYNC:");
-        lblSpeed.setTextColor(0xFFFACC15);
-        lblSpeed.setTypeface(Typeface.DEFAULT_BOLD);
-        root.addView(lblSpeed);
-
-        final String[] speedModes = {
-            "🚀 Ультра-Турбо Скорость (Box64 BigBlock=3, FastNan=1, StrongMem=0, ESYNC+FSYNC)",
-            "⚖️ Сбалансированная Скорость (Стабильный FPS + Быстрая загрузка)",
-            "🛡️ Максимальная Совместимость (Для чувствительных установщиков и античитов)"
-        };
-        final Spinner spSpeed = new Spinner(context);
-        spSpeed.setAdapter(new ArrayAdapter<>(context, android.R.layout.simple_spinner_dropdown_item, speedModes));
-        spSpeed.setSelection(prefs.getInt("pro_speed_idx", 0));
-        spSpeed.setBackground(roundedBg(0xFF1E293B, 0xFF38BDF8, 1, 8, context));
-        root.addView(spSpeed);
-
-        TextView lblShaders = new TextView(context);
-        lblShaders.setText("\n5. Комбинатор Шейдеров (можно включить сразу несколько!):");
-        lblShaders.setTextColor(0xFFA78BFA);
-        lblShaders.setTypeface(Typeface.DEFAULT_BOLD);
-        root.addView(lblShaders);
-
-        final CheckBox cbCas = new CheckBox(context);
-        cbCas.setText("✨ AMD FidelityFX CAS Sharpening (Ультра-чёткость текстур)");
-        cbCas.setTextColor(Color.WHITE);
-        cbCas.setChecked(prefs.getBoolean("pro_shader_cas", false));
-        root.addView(cbCas);
-
-        final int[] casStrength = {prefs.getInt("pro_shader_cas_val", 70)};
-        final TextView tvCasVal = new TextView(context);
-        tvCasVal.setText("   Интенсивность резкости CAS: " + casStrength[0] + "%");
-        tvCasVal.setTextColor(0xFF94A3B8);
-        root.addView(tvCasVal);
-
-        SeekBar sbCas = new SeekBar(context);
-        sbCas.setMax(100);
-        sbCas.setProgress(casStrength[0]);
-        sbCas.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            @Override
-            public void onProgressChanged(SeekBar seekBar, int p, boolean b) {
-                casStrength[0] = p;
-                tvCasVal.setText("   Интенсивность резкости CAS: " + p + "%");
-            }
-            @Override public void onStartTrackingTouch(SeekBar seekBar) {}
-            @Override public void onStopTrackingTouch(SeekBar seekBar) {}
-        });
-        root.addView(sbCas);
-
-        final CheckBox cbHdr = new CheckBox(context);
-        cbHdr.setText("🌟 HDR10 Bloom & Vibrance (Сочные цвета и свечение)");
-        cbHdr.setTextColor(Color.WHITE);
-        cbHdr.setChecked(prefs.getBoolean("pro_shader_hdr", false));
-        root.addView(cbHdr);
-
-        final int[] hdrStrength = {prefs.getInt("pro_shader_hdr_val", 55)};
-        final TextView tvHdrVal = new TextView(context);
-        tvHdrVal.setText("   Сила HDR свечения и насыщенности: " + hdrStrength[0] + "%");
-        tvHdrVal.setTextColor(0xFF94A3B8);
-        root.addView(tvHdrVal);
-
-        SeekBar sbHdr = new SeekBar(context);
-        sbHdr.setMax(100);
-        sbHdr.setProgress(hdrStrength[0]);
-        sbHdr.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            @Override
-            public void onProgressChanged(SeekBar seekBar, int p, boolean b) {
-                hdrStrength[0] = p;
-                tvHdrVal.setText("   Сила HDR свечения и насыщенности: " + p + "%");
-            }
-            @Override public void onStartTrackingTouch(SeekBar seekBar) {}
-            @Override public void onStopTrackingTouch(SeekBar seekBar) {}
-        });
-        root.addView(sbHdr);
-
-        final CheckBox cbFxaa = new CheckBox(context);
-        cbFxaa.setText("📐 FXAA Subpixel Anti-Aliasing (Сглаживание лесенок на краях)");
-        cbFxaa.setTextColor(Color.WHITE);
-        cbFxaa.setChecked(prefs.getBoolean("pro_shader_fxaa", false));
-        root.addView(cbFxaa);
-
-        final CheckBox cbColor = new CheckBox(context);
-        cbColor.setText("🎨 Dynamic Contrast & Color Boost (Глубокий контраст и гамма)");
-        cbColor.setTextColor(Color.WHITE);
-        cbColor.setChecked(prefs.getBoolean("pro_shader_color", false));
-        root.addView(cbColor);
-
-        final CheckBox cbCrt = new CheckBox(context);
-        cbCrt.setText("📺 CRT Retro Scanlines (Эффект классического монитора)");
-        cbCrt.setTextColor(Color.WHITE);
-        cbCrt.setChecked(prefs.getBoolean("pro_shader_crt", false));
-        root.addView(cbCrt);
-
-        final CheckBox cbNight = new CheckBox(context);
-        cbNight.setText("🌙 Night Vision / Shadow Boost (Осветление тёмных сцен в играх)");
-        cbNight.setTextColor(Color.WHITE);
-        cbNight.setChecked(prefs.getBoolean("pro_shader_night", false));
-        root.addView(cbNight);
-
-        final AlertDialog dialog = new AlertDialog.Builder(context)
-            .setView(scroll)
-            .create();
-
-        LinearLayout btnRow = new LinearLayout(context);
-        btnRow.setOrientation(LinearLayout.HORIZONTAL);
-        btnRow.setPadding(0, dp(context, 12), 0, 0);
-
-        Button btnBench = createStyledButton(context, "📊 Проверить FPS", 0xFFD97706, 0xFFFBBF24);
-        btnBench.setOnClickListener(v -> showFpsBenchmarkDialog(context, container));
-        btnRow.addView(btnBench, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f) {{
-            rightMargin = dp(context, 6);
-        }});
-
-        Button btnSave = createStyledButton(context, "✅ Сохранить и Применить", 0xFF059669, 0xFF34D399);
-        btnSave.setOnClickListener(v -> {
-            int apiIdx = spApi.getSelectedItemPosition();
-            int speedIdx = spSpeed.getSelectedItemPosition();
-            String chosenRes = resValues[spRes.getSelectedItemPosition()];
-
-            prefs.edit()
-                .putInt("pro_gfx_api_idx", apiIdx)
-                .putInt("pro_speed_idx", speedIdx)
-                .putInt("pro_fps_limit", fpsLimitVal[0])
-                .putBoolean("pro_shader_cas", cbCas.isChecked())
-                .putInt("pro_shader_cas_val", casStrength[0])
-                .putBoolean("pro_shader_hdr", cbHdr.isChecked())
-                .putInt("pro_shader_hdr_val", hdrStrength[0])
-                .putBoolean("pro_shader_fxaa", cbFxaa.isChecked())
-                .putBoolean("pro_shader_color", cbColor.isChecked())
-                .putBoolean("pro_shader_crt", cbCrt.isChecked())
-                .putBoolean("pro_shader_night", cbNight.isChecked())
-                .apply();
-
-            if (container != null) {
-                container.setScreenSize(chosenRes);
-                applySelectedGraphicsWrapperImmediately(context, container, apiIdx, fpsLimitVal[0]);
-
-                if (speedIdx == 0) {
-                    container.setBox64Preset("PERFORMANCE");
-                    container.setEnvVars("ZINK_DESCRIPTORS=lazy MESA_SHADER_CACHE_DISABLE=false MESA_SHADER_CACHE_MAX_SIZE=1024MB mesa_glthread=true WINEESYNC=1 WINEFSYNC=1 DXVK_ASYNC=1 BOX64_DYNAREC_BIGBLOCK=3 BOX64_DYNAREC_FASTNAN=1 BOX64_DYNAREC_STRONGMEM=0");
-                } else if (speedIdx == 1) {
-                    container.setBox64Preset("INTERMEDIATE");
-                    container.setEnvVars("ZINK_DESCRIPTORS=lazy MESA_SHADER_CACHE_DISABLE=false WINEESYNC=1 DXVK_ASYNC=1");
-                } else {
-                    container.setBox64Preset("COMPATIBILITY");
-                    container.setEnvVars("WINEESYNC=1 BOX64_DYNAREC_STRONGMEM=1");
+            java.util.ArrayList<String> fl = new java.util.ArrayList<>();
+            java.util.ArrayList<Integer> fv = new java.util.ArrayList<>();
+            fl.add("Без лимита");
+            fv.add(0);
+            for (int c : new int[]{30, 45, 60, 90, 120}) {
+                if (c <= maxHz) {
+                    fl.add(String.valueOf(c));
+                    fv.add(c);
                 }
+            }
+            fl.add("Авто");
+            fv.add(FPS_AUTO);
+            int[] fvals = new int[fv.size()];
+            for (int i = 0; i < fvals.length; i++) fvals[i] = fv.get(i);
+            root.addView(perfTitle(context, "Лимит FPS (сразу)"));
+            root.addView(perfHint(context, "Лимит не поднимает FPS, а только ограничивает сверху (ровнее и холоднее). «Без лимита» — максимум, что даст игра."));
+            root.addView(perfChips(context, fl.toArray(new String[0]), fvals, getFpsMode(act), v -> setFpsMode(act, v)));
+        }
+
+        if (container != null) {
+            final String[] resValues = {"800x600", "1024x768", "1280x720", "1366x768", "1600x900", "1920x1080"};
+            int cur = -1;
+            for (int i = 0; i < resValues.length; i++) {
+                if (resValues[i].equals(container.getScreenSize())) cur = i;
+            }
+            int[] idx = new int[resValues.length];
+            for (int i = 0; i < idx.length; i++) idx[i] = i;
+            root.addView(perfTitle(context, "Разрешение игры (со следующего запуска)"));
+            root.addView(perfHint(context, "Меньше — больше FPS. Сейчас: " + container.getScreenSize() + "."));
+            root.addView(perfChips(context, resValues, idx, cur, v -> {
+                container.setScreenSize(resValues[v]);
                 container.saveData();
+            }));
+        }
+
+        root.addView(perfTitle(context, "Шейдеры поверх картинки (сразу)"));
+        root.addView(perfHint(context, "Каждый шейдер немного снижает FPS. По умолчанию все выключены."));
+        final String[][] shaders = {
+            {"pro_shader_cas", "Резкость (CAS)"}, {"pro_shader_fxaa", "Сглаживание (FXAA)"}, {"pro_shader_hdr", "Свечение и насыщенность (HDR)"},
+            {"pro_shader_color", "Контраст и цвет"}, {"pro_shader_night", "Осветление тёмных сцен"}, {"pro_shader_crt", "Ретро-ЭЛТ"}
+        };
+        for (final String[] sh : shaders) {
+            CheckBox cb = new CheckBox(context);
+            cb.setText(sh[1]);
+            cb.setTextColor(UI_TEXT);
+            cb.setChecked(prefs.getBoolean(sh[0], false));
+            cb.setOnCheckedChangeListener((btn, on) -> {
+                prefs.edit().putBoolean(sh[0], on).apply();
+                if (act != null) applySavedShadersToRenderer(act);
+            });
+            root.addView(cb);
+        }
+        root.addView(perfHint(context, "Рендерер DXVK и видеодрайвер — в «FPS → Производительность». Скорость Box64 для Unity — кнопка «Unity: …»."));
+
+        ScrollView scroll = new ScrollView(context);
+        scroll.addView(root);
+        new AlertDialog.Builder(context, android.R.style.Theme_Material_Dialog_Alert)
+            .setTitle("Графика и FPS")
+            .setView(scroll)
+            .setPositiveButton("Готово", null)
+            .show();
+    }
+
+    /**
+     * v12.7.4: старая «Студия графики» при «Сохранить и применить» затирала переменные контейнера
+     * (BOX64_DYNAREC_STRONGMEM=0, BIGBLOCK=3, FASTNAN, WINEFSYNC=1 — Unity падала, старт замедлялся), ставила DXVK 2.4.1
+     * и потолок FPS в DXVK. Чиним при запуске, до чтения настроек.
+     */
+    public static void repairStudioDamage(Activity a, Container c) {
+        if (a == null || c == null) return;
+        try {
+            boolean changed = false;
+            String env = c.getEnvVars();
+            if (env != null && (env.contains("BOX64_DYNAREC_STRONGMEM=0") || env.contains("WINEFSYNC=1") || env.contains("BOX64_DYNAREC_BIGBLOCK=3"))) {
+                StringBuilder sb = new StringBuilder();
+                for (String tok : env.trim().split("\\s+")) {
+                    if (tok.isEmpty() || tok.startsWith("BOX64_DYNAREC_STRONGMEM=0") || tok.startsWith("WINEFSYNC=")
+                        || tok.startsWith("BOX64_DYNAREC_BIGBLOCK=3") || tok.startsWith("BOX64_DYNAREC_FASTNAN=")) continue;
+                    if (sb.length() > 0) sb.append(' ');
+                    sb.append(tok);
+                }
+                c.setEnvVars(sb.toString());
+                changed = true;
             }
-
-            if (liveActivityOrNull != null) {
-                applySavedShadersToRenderer(liveActivityOrNull);
+            String dxw = c.getDXWrapper();
+            if (com.winlator.container.DXWrappers.DXVK.equals(dxw)) {
+                KeyValueSet[] cfgs = com.winlator.container.DXWrappers.parseConfigs(dxw, c.getDXWrapperConfig());
+                boolean dx = false;
+                if ("2.4.1".equals(cfgs[0].get("version")) && !com.winlator.core.GPUHelper.isTurnipSupported(a)) {
+                    cfgs[0].put("version", com.winlator.core.DefaultVersion.HYBRID_DXVK);
+                    dx = true;
+                }
+                String fr = cfgs[0].get("framerate");
+                if (fr != null && !fr.isEmpty() && !"0".equals(fr)) {
+                    cfgs[0].put("framerate", "0");
+                    dx = true;
+                }
+                if (dx) {
+                    c.setDXWrapperConfig(cfgs[0].toString() + "|" + cfgs[1].toString());
+                    changed = true;
+                }
             }
-
-            AppUtils.showToast(context, "✅ Графика, лимит FPS, скорость и шейдеры применены!");
-            dialog.dismiss();
-        });
-        btnRow.addView(btnSave, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.3f));
-
-        root.addView(btnRow);
-        dialog.show();
+            if (changed) {
+                c.saveData();
+                AppUtils.showToast(a, "🔧 Исправлены настройки, сломанные старой «Студией графики» (Box64 / FSYNC / DXVK)");
+            }
+        } catch (Throwable ignored) {}
     }
 
     /**
@@ -1741,14 +1629,14 @@ public class WinlatorProSuite {
                 }
             } else {
                 container.setDXWrapper(com.winlator.container.DXWrappers.DXVK);
-                String ver = (apiIdx == 1) ? "2.4.1" : (apiIdx == 2 ? "1.7.2" : com.winlator.core.DefaultVersion.HYBRID_DXVK);
+                String ver = (apiIdx == 1 && turnipSupported) ? "2.4.1" : (apiIdx == 2 ? "1.7.2" : com.winlator.core.DefaultVersion.HYBRID_DXVK);
                 if (apiIdx == 2) {
                     container.setGraphicsDriver(com.winlator.container.GraphicsDrivers.VORTEK + "," + com.winlator.container.GraphicsDrivers.VIRGL);
                 } else {
                     container.setGraphicsDriver(vkDriver + "," + com.winlator.container.GraphicsDrivers.VIRGL);
                 }
                 cfgs[0].put("version", ver);
-                cfgs[0].put("framerate", String.valueOf(fr));
+                cfgs[0].put("framerate", "0"); // v12.7.4: лимит FPS — только в «Графика и FPS», без потолка в DXVK
                 cfgs[0].put("async", "1");
                 cfgs[0].put("asyncCache", "1");
                 container.setDXWrapperConfig(cfgs[0].toString() + "|" + cfgs[1].toString());
@@ -2143,6 +2031,8 @@ public class WinlatorProSuite {
         final int[] fpsCount = {0};
         final boolean[] fpsSaved = {false};
         final long hudStartMs = android.os.SystemClock.elapsedRealtime();
+        HUD_START_MS = hudStartMs;
+        GAME_WINDOW_MS = 0L;
         final Handler fpsHandler = new Handler(Looper.getMainLooper());
         fpsHandler.post(new Runnable() {
             @Override
@@ -2154,7 +2044,10 @@ public class WinlatorProSuite {
                 long sinceStart = android.os.SystemClock.elapsedRealtime() - hudStartMs;
                 if (fps >= 0.5f) {
                     hudFramesSeen = true;
-                    if (!firstFrameSeen[0]) firstFrameAt[0] = android.os.SystemClock.elapsedRealtime();
+                    if (!firstFrameSeen[0]) {
+                        firstFrameAt[0] = android.os.SystemClock.elapsedRealtime();
+                        logStartup(activity, sinceStart);
+                    }
                     firstFrameSeen[0] = true;
                     // v12.7.2: честный замер FPS текущего видеодрайвера (Vortek / PanVK): 60 с игры после 15 с разгона
                     long playMs = android.os.SystemClock.elapsedRealtime() - firstFrameAt[0];
@@ -3069,6 +2962,29 @@ public class WinlatorProSuite {
         }
     }
 
+    /** v12.7.4: журнал запуска — через сколько секунд окно игры и первый кадр (Загрузки/Winlator-logs/startup.txt). */
+    private static void logStartup(XServerDisplayActivity a, long ms) {
+        try {
+            PreferenceManager.getDefaultSharedPreferences(a).edit().putLong("last_first_frame_ms_" + gamePrefSuffix(a), ms).apply();
+        } catch (Throwable ignored) {}
+        final String line = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(new java.util.Date())
+            + " | " + gamePrefSuffix(a)
+            + " | окно игры через " + (GAME_WINDOW_MS > 0 ? String.format(Locale.US, "%.1f с", GAME_WINDOW_MS / 1000.0) : "?")
+            + " | первый кадр через " + String.format(Locale.US, "%.1f с", ms / 1000.0)
+            + " | драйвер " + (a.panvkLaunch > 0 ? "PanVK" : "Vortek/по контейнеру")
+            + " | DXVK " + (a.asyncDxvkLaunch ? a.asyncDxvkVersion : "обычный")
+            + " | FPS-режим " + getFpsMode(a) + " | экран " + Math.round(currentRefresh(a)) + " Гц\n";
+        BG.execute(() -> {
+            try {
+                File dir = new File(Environment.getExternalStorageDirectory(), "Download/Winlator-logs");
+                dir.mkdirs();
+                java.io.FileWriter w = new java.io.FileWriter(new File(dir, "startup.txt"), true);
+                w.write(line);
+                w.close();
+            } catch (Throwable ignored) {}
+        });
+    }
+
     private static String panvkStatusText(Context ctx, File exe) {
         try {
             int st = PreferenceManager.getDefaultSharedPreferences(ctx).getInt("panvk_status2_" + maliKey(exe), -1);
@@ -3154,7 +3070,58 @@ public class WinlatorProSuite {
     }
 
     /** Режим экрана под лимит: 30→60 Гц, 40→120 Гц, 45→90 Гц, 60→120 Гц (если есть). 0 — вернуть системный. */
+    /** v12.7.4: частота экрана для игры (0 — системная). */
+    public static int getScreenHz(XServerDisplayActivity a) {
+        try {
+            return PreferenceManager.getDefaultSharedPreferences(a).getInt("screen_hz_" + gamePrefSuffix(a), 0);
+        } catch (Throwable t) {
+            return 0;
+        }
+    }
+
+    private static void setScreenHz(XServerDisplayActivity a, int hz) {
+        try {
+            PreferenceManager.getDefaultSharedPreferences(a).edit().putInt("screen_hz_" + gamePrefSuffix(a), hz).apply();
+        } catch (Throwable ignored) {}
+        requestDisplayModeFor(a, GOV_CAP);
+        AppUtils.showToast(a, hz > 0 ? "Частота экрана: " + hz + " Гц" : "Частота экрана: системная");
+    }
+
+    /** Выбранная пользователем частота важнее подбора под лимит; vsync-ритм кадров идёт на реальной частоте. */
     private static int requestDisplayModeFor(Activity a, int cap) {
+        int userHz = (a instanceof XServerDisplayActivity) ? getScreenHz((XServerDisplayActivity) a) : 0;
+        int rate = userHz > 0 ? requestExactHz(a, userHz) : requestDisplayModeForCap(a, cap);
+        int hz = rate > 0 ? rate : Math.round(currentRefresh(a));
+        PresentExtension.displayHz = Math.max(30, hz);
+        return rate;
+    }
+
+    private static int requestExactHz(Activity a, int hz) {
+        try {
+            android.view.Display d = a.getWindowManager().getDefaultDisplay();
+            android.view.Display.Mode cur = d.getMode();
+            int bestId = 0;
+            float bestRate = 0;
+            for (android.view.Display.Mode m : d.getSupportedModes()) {
+                if (m.getPhysicalWidth() != cur.getPhysicalWidth() || m.getPhysicalHeight() != cur.getPhysicalHeight()) continue;
+                if (Math.abs(m.getRefreshRate() - hz) < 1.5f) {
+                    bestId = m.getModeId();
+                    bestRate = m.getRefreshRate();
+                    break;
+                }
+            }
+            android.view.WindowManager.LayoutParams lp = a.getWindow().getAttributes();
+            if (lp.preferredDisplayModeId != bestId) {
+                lp.preferredDisplayModeId = bestId;
+                a.getWindow().setAttributes(lp);
+            }
+            return Math.round(bestRate);
+        } catch (Throwable t) {
+            return 0;
+        }
+    }
+
+    private static int requestDisplayModeForCap(Activity a, int cap) {
         int chosenRate = 0;
         try {
             android.view.Display d = a.getWindowManager().getDefaultDisplay();
@@ -3193,6 +3160,8 @@ public class WinlatorProSuite {
     private static int GOV_LOW = 0;
     private static int GOV_N = 0;
     private static int GOV_WAIT = 0;
+    private static volatile long HUD_START_MS = 0L;
+    private static volatile long GAME_WINDOW_MS = 0L;
     private static final float[] GOV_SAMPLES = new float[32];
 
     private static void applyFpsCap(XServerDisplayActivity a, int cap) {
@@ -3397,6 +3366,8 @@ public class WinlatorProSuite {
 
         StringBuilder info = new StringBuilder();
         float[] rates = supportedRefreshRates(activity);
+        long lastFf = PreferenceManager.getDefaultSharedPreferences(ctx).getLong("last_first_frame_ms_" + gamePrefSuffix(activity), -1L);
+        if (lastFf > 0) info.append("Последний запуск: первый кадр через ").append(Math.round(lastFf / 1000.0)).append(" с (журнал: Загрузки/Winlator-logs/startup.txt)\n");
         if (isMaliDevice()) info.append("GPU: ").append(maliGpuInfo()).append('\n');
         info.append("Экран: ").append(Math.round(currentRefresh(activity))).append(" Гц (доступно:");
         for (float r : rates) info.append(' ').append(Math.round(r));
@@ -4384,6 +4355,7 @@ public class WinlatorProSuite {
                         }
                         // v12.6.1: окно игры пропало (тихий вылет без окна UnityCrashHandler) — показываем причину из лога
                         if (gameNow[0]) {
+                            if (GAME_WINDOW_MS == 0L && HUD_START_MS > 0L) GAME_WINDOW_MS = android.os.SystemClock.elapsedRealtime() - HUD_START_MS;
                             if (!gameWindowSeen) applyFastCoresAffinity(activity, container, gamePid[0], targetExeName);
                             gameWindowSeen = true;
                             gameMissingTicks = 0;

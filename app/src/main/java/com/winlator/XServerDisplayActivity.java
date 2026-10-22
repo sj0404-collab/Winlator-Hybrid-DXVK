@@ -218,6 +218,8 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
             String shortcutPath = getIntent().getStringExtra("shortcut_path");
             if (shortcutPath != null && !shortcutPath.isEmpty()) shortcut = new Shortcut(container, new File(shortcutPath));
 
+            // v12.7.4: чиним то, что сломала старая «Студия графики» (Box64/FSYNC/DXVK) — до чтения настроек
+            com.winlator.pro.WinlatorProSuite.repairStudioDamage(this, container);
             String graphicsDriver = container.getGraphicsDriver();
             audioDriver = container.getAudioDriver();
             String dxwrapper = container.getDXWrapper();
@@ -583,7 +585,8 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
         GuestProgramLauncherComponent guestProgramLauncherComponent = new GuestProgramLauncherComponent();
 
         if (container != null) {
-            if (container.getHUDMode() == FrameRating.Mode.FULL.ordinal()) envVars.put("X11_WND_GPU_INFO", "1");
+            // v12.7.4: на Vortek/Mali запрос GPU из Wine при каждом окне только замедлял старт — оставляем для Turnip
+            if (container.getHUDMode() == FrameRating.Mode.FULL.ordinal() && graphicsDriver[0].equals(GraphicsDrivers.TURNIP)) envVars.put("X11_WND_GPU_INFO", "1");
 
             // Всегда запускаем полноценную оболочку Рабочего стола Windows ("shell"), чтобы при установке из Проводника экран Рабочего стола не скрывался!
             String desktopName = "shell";
