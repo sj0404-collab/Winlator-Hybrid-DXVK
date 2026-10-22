@@ -941,7 +941,10 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
                 ? com.winlator.pro.WinlatorProSuite.maliDriverMode(this, resolveEarlyTargetExe()) : 0;
             if (maliMode > 0 && new File(libDir, "libvulkan_panfrost.so").isFile() && new File(vulkanICDDir, "panfrost_icd.aarch64.json").isFile()) {
                 panvkLaunch = maliMode;
-                envVars.put("VK_ICD_FILENAMES", icdBase + "/panfrost_icd.aarch64.json:" + icdBase + "/vortek_icd.aarch64.json");
+                // v12.7.2: PanVK без запасного Vortek — если игра пошла, работает именно PanVK; не пошла — автооткат на Vortek
+                envVars.put("VK_ICD_FILENAMES", icdBase + "/panfrost_icd.aarch64.json");
+                envVars.put("PANVK_DEBUG", "startup");
+                envVars.put("MESA_LOG_LEVEL", "info");
                 if (maliMode == 2) envVars.put("PANVK_KBASE_DRI3", "raw");
                 File panvkLog = new File(rootFS.getRootDir(), RootFS.USER_CACHE_PATH + "/panvk_mesa.log");
                 FileUtils.delete(panvkLog);

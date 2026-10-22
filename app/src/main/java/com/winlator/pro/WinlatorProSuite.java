@@ -2139,6 +2139,9 @@ public class WinlatorProSuite {
         final boolean[] firstFrameSeen = {false};
         final long[] firstFrameAt = {0L};
         final boolean[] driverChecked = {false};
+        final double[] fpsSum = {0d};
+        final int[] fpsCount = {0};
+        final boolean[] fpsSaved = {false};
         final long hudStartMs = android.os.SystemClock.elapsedRealtime();
         final Handler fpsHandler = new Handler(Looper.getMainLooper());
         fpsHandler.post(new Runnable() {
@@ -2153,10 +2156,20 @@ public class WinlatorProSuite {
                     hudFramesSeen = true;
                     if (!firstFrameSeen[0]) firstFrameAt[0] = android.os.SystemClock.elapsedRealtime();
                     firstFrameSeen[0] = true;
+                    // v12.7.2: честный замер FPS текущего видеодрайвера (Vortek / PanVK): 60 с игры после 15 с разгона
+                    long playMs = android.os.SystemClock.elapsedRealtime() - firstFrameAt[0];
+                    if (!fpsSaved[0] && playMs > 15000L) {
+                        fpsSum[0] += fps;
+                        fpsCount[0]++;
+                        if (playMs > 75000L && fpsCount[0] >= 30) {
+                            fpsSaved[0] = true;
+                            saveDriverFps(activity, (float) (fpsSum[0] / fpsCount[0]));
+                        }
+                    }
                     if (!driverChecked[0] && activity.panvkLaunch > 0 && android.os.SystemClock.elapsedRealtime() - firstFrameAt[0] > 4000L) {
                         driverChecked[0] = true;
                         BG.execute(() -> {
-                            final String msg = checkPanvkActive(activity);
+                            final String msg = checkPanvkActive2(activity);
                             if (msg != null) activity.runOnUiThread(() -> {
                                 if (!activity.isFinishing()) AppUtils.showToast(activity, msg);
                             });
@@ -2964,7 +2977,7 @@ public class WinlatorProSuite {
     public static int maliDriverMode(Context ctx, File exe) {
         if (ctx == null || !isMaliDevice()) return 0;
         try {
-            return PreferenceManager.getDefaultSharedPreferences(ctx).getInt("mali_drv2_" + maliKey(exe), 2);
+            return PreferenceManager.getDefaultSharedPreferences(ctx).getInt("mali_drv3_" + maliKey(exe), 0);
         } catch (Throwable t) {
             return 0;
         }
@@ -2973,7 +2986,7 @@ public class WinlatorProSuite {
     public static void setMaliDriverMode(Context ctx, File exe, int mode) {
         if (ctx == null) return;
         try {
-            PreferenceManager.getDefaultSharedPreferences(ctx).edit().putInt("mali_drv2_" + maliKey(exe), mode).apply();
+            PreferenceManager.getDefaultSharedPreferences(ctx).edit().putInt("mali_drv3_" + maliKey(exe), mode).apply();
         } catch (Throwable ignored) {}
     }
 
@@ -3019,9 +3032,46 @@ public class WinlatorProSuite {
         }
     }
 
+    /** v12.7.2: PanVK запускается без запасного Vortek — раз кадры идут, работает именно PanVK. */
+    static String checkPanvkActive2(XServerDisplayActivity a) {
+        try {
+            File exe = a.getLaunchTargetExe();
+            PreferenceManager.getDefaultSharedPreferences(a).edit().putInt("panvk_status2_" + maliKey(exe), 1).apply();
+            return "🟢 Видеодрайвер: PanVK (Mali напрямую" + (a.panvkLaunch == 2 ? ", DRI3)" : ", SHM)")
+                + ". Через минуту игры FPS сохранится для сравнения с Vortek («Производительность»).";
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    private static void saveDriverFps(XServerDisplayActivity a, float avg) {
+        try {
+            if (!isMaliDevice() || avg <= 0f) return;
+            File exe = a.getLaunchTargetExe();
+            String drv = a.panvkLaunch > 0 ? "panvk" : "vortek";
+            PreferenceManager.getDefaultSharedPreferences(a).edit().putFloat("fps_avg_" + drv + "_" + maliKey(exe), avg).apply();
+        } catch (Throwable ignored) {}
+    }
+
+    private static String driverFpsText(Context ctx, File exe) {
+        try {
+            SharedPreferences p = PreferenceManager.getDefaultSharedPreferences(ctx);
+            float v = p.getFloat("fps_avg_vortek_" + maliKey(exe), -1f);
+            float pv = p.getFloat("fps_avg_panvk_" + maliKey(exe), -1f);
+            if (v < 0 && pv < 0) return "";
+            StringBuilder sb = new StringBuilder("Замер в игре: ");
+            if (v >= 0) sb.append("Vortek ~").append(Math.round(v)).append(" FPS");
+            if (v >= 0 && pv >= 0) sb.append(" · ");
+            if (pv >= 0) sb.append("PanVK ~").append(Math.round(pv)).append(" FPS");
+            return sb.append(". ").toString();
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
     private static String panvkStatusText(Context ctx, File exe) {
         try {
-            int st = PreferenceManager.getDefaultSharedPreferences(ctx).getInt("panvk_status_" + maliKey(exe), -1);
+            int st = PreferenceManager.getDefaultSharedPreferences(ctx).getInt("panvk_status2_" + maliKey(exe), -1);
             if (st == 1) return "Последняя проверка: PanVK работал ✓";
             if (st == 0) return "Последняя проверка: PanVK не запустился, работал Vortek.";
         } catch (Throwable ignored) {}
@@ -3312,10 +3362,11 @@ public class WinlatorProSuite {
             final File mexe = activity.getLaunchTargetExe();
             String now = activity.panvkLaunch > 0 ? ("PanVK" + (activity.panvkLaunch == 2 ? " · DRI3" : " · SHM")) : "Vortek";
             root.addView(perfTitle(ctx, "Видеодрайвер Mali (со следующего запуска)"));
-            root.addView(perfHint(ctx, "«PanVK» — открытый драйвер Mesa прямо к ядру Mali, без моста Vortek (экспериментальный). "
-                + "DRI3 — кадр без лишней копии, SHM — надёжнее. Если игра вылетит на PanVK, следующий запуск сам пойдёт через Vortek. "
-                + "Сейчас: " + now + ". " + panvkStatusText(activity, mexe)));
-            root.addView(perfChips(ctx, new String[]{"PanVK · DRI3", "PanVK · SHM", "Vortek"}, new int[]{2, 1, 0}, maliDriverMode(activity, mexe),
+            root.addView(perfHint(ctx, "«Vortek» — фирменный драйвер Mali через мост, по умолчанию (на слабых Mali быстрее). "
+                + "«PanVK» — открытый драйвер Mesa прямо к ядру Mali, эксперимент: на G57/G52 обычно медленнее, на G610 и новее может быть быстрее. "
+                + "Если игра не запустится или вылетит на PanVK, следующий запуск сам пойдёт через Vortek. Сейчас: " + now + ". "
+                + driverFpsText(activity, mexe) + panvkStatusText(activity, mexe)));
+            root.addView(perfChips(ctx, new String[]{"Vortek", "PanVK · DRI3", "PanVK · SHM"}, new int[]{0, 2, 1}, maliDriverMode(activity, mexe),
                 v -> setMaliDriverMode(activity, mexe, v)));
         }
 
@@ -3352,7 +3403,7 @@ public class WinlatorProSuite {
 
         ScrollView scroll = new ScrollView(ctx);
         scroll.addView(root);
-        new AlertDialog.Builder(ctx)
+        new AlertDialog.Builder(ctx, android.R.style.Theme_Material_Dialog_Alert)
             .setTitle("Производительность")
             .setView(scroll)
             .setPositiveButton("Готово", null)
@@ -3472,6 +3523,11 @@ public class WinlatorProSuite {
     private static String stepDownAfterGfxFail(XServerDisplayActivity activity) {
         try {
             File exe = activity != null ? activity.getLaunchTargetExe() : null;
+            if (activity != null && activity.panvkLaunch > 0 && maliDriverMode(activity, exe) > 0) {
+                setMaliDriverMode(activity, exe, 0);
+                PreferenceManager.getDefaultSharedPreferences(activity).edit().putInt("panvk_status2_" + maliKey(exe), 0).apply();
+                return "Что сделано: следующий запуск — через Vortek (PanVK не смог запустить графику на этом телефоне).\n\n";
+            }
             if (activity != null && activity.asyncDxvkLaunch && exe != null) {
                 int m = dxvkMode(activity, exe);
                 if (m == 2) {
