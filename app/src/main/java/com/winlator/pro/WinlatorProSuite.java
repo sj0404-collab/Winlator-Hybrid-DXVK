@@ -1466,41 +1466,7 @@ public class WinlatorProSuite {
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(dp(context, 18), dp(context, 4), dp(context, 18), dp(context, 6));
 
-        if (act != null) {
-            float[] rates = supportedRefreshRates(act);
-            int maxHz = 60;
-            for (float r : rates) maxHz = Math.max(maxHz, Math.round(r));
-            String[] hzLabels = new String[rates.length + 1];
-            int[] hzValues = new int[rates.length + 1];
-            hzLabels[0] = "Системная";
-            hzValues[0] = 0;
-            for (int i = 0; i < rates.length; i++) {
-                hzLabels[i + 1] = Math.round(rates[i]) + " Гц";
-                hzValues[i + 1] = Math.round(rates[i]);
-            }
-            root.addView(perfTitle(context, "Частота экрана (сразу)"));
-            root.addView(perfHint(context, "Сейчас " + Math.round(currentRefresh(act)) + " Гц. Если игра упирается в 60 кадров, выберите 90 или 120 Гц — "
-                + "потолок кадров поднимется (если телефон и игра потянут). Больше расход батареи."));
-            root.addView(perfChips(context, hzLabels, hzValues, getScreenHz(act), v -> setScreenHz(act, v)));
-
-            java.util.ArrayList<String> fl = new java.util.ArrayList<>();
-            java.util.ArrayList<Integer> fv = new java.util.ArrayList<>();
-            fl.add("Без лимита");
-            fv.add(0);
-            for (int c : new int[]{30, 45, 60, 90, 120}) {
-                if (c <= maxHz) {
-                    fl.add(String.valueOf(c));
-                    fv.add(c);
-                }
-            }
-            fl.add("Авто");
-            fv.add(FPS_AUTO);
-            int[] fvals = new int[fv.size()];
-            for (int i = 0; i < fvals.length; i++) fvals[i] = fv.get(i);
-            root.addView(perfTitle(context, "Лимит FPS (сразу)"));
-            root.addView(perfHint(context, "Лимит не поднимает FPS, а только ограничивает сверху (ровнее и холоднее). «Без лимита» — максимум, что даст игра."));
-            root.addView(perfChips(context, fl.toArray(new String[0]), fvals, getFpsMode(act), v -> setFpsMode(act, v)));
-        }
+        root.addView(perfHint(context, "Плавность и лимит кадров — в «☰ ▸ FPS»: по умолчанию «Авто 30–60» держит ровные кадры, привязанные к частоте экрана."));
 
         if (container != null) {
             final String[] resValues = {"800x600", "1024x768", "1280x720", "1366x768", "1600x900", "1920x1080"};
@@ -2033,6 +1999,13 @@ public class WinlatorProSuite {
         final long hudStartMs = android.os.SystemClock.elapsedRealtime();
         HUD_START_MS = hudStartMs;
         GAME_WINDOW_MS = 0L;
+        // v12.7.5: метка vsync экрана — к ней привязана выдача кадров при лимите (ровные 30–60)
+        final android.view.Choreographer.FrameCallback[] vsyncCb = new android.view.Choreographer.FrameCallback[1];
+        vsyncCb[0] = frameTimeNanos -> {
+            PresentExtension.vsyncNanos = frameTimeNanos;
+            if (!activity.isFinishing() && !activity.isDestroyed()) android.view.Choreographer.getInstance().postFrameCallback(vsyncCb[0]);
+        };
+        android.view.Choreographer.getInstance().postFrameCallback(vsyncCb[0]);
         final Handler fpsHandler = new Handler(Looper.getMainLooper());
         fpsHandler.post(new Runnable() {
             @Override
@@ -3002,15 +2975,15 @@ public class WinlatorProSuite {
 
     public static int getFpsMode(XServerDisplayActivity a) {
         try {
-            return PreferenceManager.getDefaultSharedPreferences(a).getInt("fps_limit2_" + gamePrefSuffix(a), 0);
+            return PreferenceManager.getDefaultSharedPreferences(a).getInt("fps_limit3_" + gamePrefSuffix(a), FPS_AUTO);
         } catch (Throwable t) {
-            return 0;
+            return FPS_AUTO;
         }
     }
 
     private static void setFpsMode(XServerDisplayActivity a, int mode) {
         try {
-            PreferenceManager.getDefaultSharedPreferences(a).edit().putInt("fps_limit2_" + gamePrefSuffix(a), mode).apply();
+            PreferenceManager.getDefaultSharedPreferences(a).edit().putInt("fps_limit3_" + gamePrefSuffix(a), mode).apply();
         } catch (Throwable ignored) {}
         GOV_MODE = Integer.MIN_VALUE; // применится на следующем тике (через секунду)
     }
@@ -3089,11 +3062,43 @@ public class WinlatorProSuite {
 
     /** Выбранная пользователем частота важнее подбора под лимит; vsync-ритм кадров идёт на реальной частоте. */
     private static int requestDisplayModeFor(Activity a, int cap) {
-        int userHz = (a instanceof XServerDisplayActivity) ? getScreenHz((XServerDisplayActivity) a) : 0;
-        int rate = userHz > 0 ? requestExactHz(a, userHz) : requestDisplayModeForCap(a, cap);
-        int hz = rate > 0 ? rate : Math.round(currentRefresh(a));
-        PresentExtension.displayHz = Math.max(30, hz);
-        return rate;
+        // v12.7.5: частоту экрана выбирает лимит (кратная ему); ручной выбор Гц убран — он ничего не давал
+        if (cap <= 0) return requestDisplayModeForCap(a, 0);
+        int rate = pickRateFor(a, cap);
+        return rate > 0 ? requestExactHz(a, rate) : requestDisplayModeForCap(a, cap);
+    }
+
+    private static boolean rateDivides(float rate, int cap) {
+        float k = rate / cap;
+        return k >= 0.99f && Math.abs(k - Math.round(k)) < 0.03f;
+    }
+
+    /** Частота экрана, кратная лимиту: текущая, если подходит, иначе самая низкая подходящая (меньше нагрузка на GPU). */
+    private static int pickRateFor(Activity a, int cap) {
+        float cur = currentRefresh(a);
+        if (rateDivides(cur, cap)) return Math.round(cur);
+        int best = 0;
+        for (float r : supportedRefreshRates(a)) {
+            if (rateDivides(r, cap) && (best == 0 || Math.round(r) < best)) best = Math.round(r);
+        }
+        return best;
+    }
+
+    /** Ровные лимиты 30–60 для частоты экрана: кадр держится целое число тактов. По убыванию. */
+    private static int[] capsForRate(float rate) {
+        java.util.ArrayList<Integer> l = new java.util.ArrayList<>();
+        for (int c : new int[]{60, 45, 40, 30}) {
+            if (rateDivides(rate, c)) l.add(c);
+        }
+        int[] out = new int[l.size()];
+        for (int i = 0; i < out.length; i++) out[i] = l.get(i);
+        return out;
+    }
+
+    private static float govPercentile(float[] v, int n, float q) {
+        float[] sorted = java.util.Arrays.copyOf(v, n);
+        java.util.Arrays.sort(sorted);
+        return sorted[Math.min(n - 1, Math.max(0, (int) (n * q)))];
     }
 
     private static int requestExactHz(Activity a, int hz) {
@@ -3160,6 +3165,8 @@ public class WinlatorProSuite {
     private static int GOV_LOW = 0;
     private static int GOV_N = 0;
     private static int GOV_WAIT = 0;
+    private static int GOV_HIGH = 0;
+    private static int GOV_PROBE_FROM = 0;
     private static volatile long HUD_START_MS = 0L;
     private static volatile long GAME_WINDOW_MS = 0L;
     private static final float[] GOV_SAMPLES = new float[32];
@@ -3171,17 +3178,21 @@ public class WinlatorProSuite {
     }
 
     /**
-     * v12.7.3: «Авто» больше не душит игру. Лимит ставится, только если игра стабильно держит его (90% секунд не ниже),
-     * загрузки (<10 FPS) и первые 20 с не учитываются, а при просадке лимит снимается совсем — без ступенек 40 → 30.
+     * v12.7.5: «Авто 30–60» — ровные кадры, привязанные к экрану. Первые 15 с и загрузки (<10 FPS) не учитываются;
+     * 10 с замера → самый высокий ровный лимит (60/45/40/30), который игра держит 90% времени, и частота экрана, кратная ему.
+     * 4 с ниже лимита — ступень ниже (не ниже 30); 30 с ровно на лимите — проба ступени выше (не удержала — тихо назад).
      */
     private static void fpsGovernorTick(XServerDisplayActivity a, float fps) {
+        float curRate = currentRefresh(a);
+        PresentExtension.vsyncPeriodNanos = Math.max(4000000L, (long) (1000000000.0 / Math.max(30f, curRate)));
         int mode = getFpsMode(a);
         if (mode != GOV_MODE) {
             GOV_MODE = mode;
             GOV_PHASE = 0;
             GOV_N = 0;
             GOV_LOW = 0;
-            GOV_WAIT = 20;
+            GOV_HIGH = 0;
+            GOV_WAIT = 15;
             if (mode == FPS_AUTO) {
                 GOV_CAP = 0;
                 PresentExtension.fpsLimit = 0;
@@ -3197,42 +3208,88 @@ public class WinlatorProSuite {
         }
         if (GOV_PHASE == 0) {
             GOV_SAMPLES[GOV_N++] = fps;
-            if (GOV_N >= 15) {
-                float[] sorted = java.util.Arrays.copyOf(GOV_SAMPLES, GOV_N);
-                java.util.Arrays.sort(sorted);
-                float p10 = sorted[(int) (sorted.length * 0.1f)];
-                int cap = 0;
-                for (int c : evenCaps(a)) {
-                    if (p10 >= c * 0.97f) {
-                        cap = c;
+            if (GOV_N >= 10) {
+                float p10 = govPercentile(GOV_SAMPLES, GOV_N, 0.1f);
+                GOV_N = 0;
+                int bestCap = 30;
+                float bestRate = curRate;
+                for (float r : supportedRefreshRates(a)) {
+                    for (int c : capsForRate(r)) {
+                        if (p10 < c * 0.93f) continue;
+                        boolean same = Math.round(r) == Math.round(curRate);
+                        if (c > bestCap || (c == bestCap && same)) {
+                            bestCap = c;
+                            bestRate = r;
+                        }
                         break;
                     }
                 }
-                GOV_N = 0;
+                int rate = rateDivides(bestRate, bestCap) ? Math.round(bestRate) : pickRateFor(a, bestCap);
+                GOV_CAP = bestCap;
+                PresentExtension.fpsLimit = bestCap;
+                if (rate > 0 && rate != Math.round(curRate)) requestExactHz(a, rate);
+                GOV_PHASE = 1;
                 GOV_LOW = 0;
-                if (cap > 0) {
-                    applyFpsCap(a, cap);
-                    GOV_PHASE = 1;
-                    AppUtils.showToast(a, "Плавность: ровные " + cap + " FPS — игра их стабильно держит. Изменить: ☰ ▸ FPS");
-                } else {
-                    GOV_PHASE = 2;
-                    GOV_WAIT = 60;
-                }
+                GOV_HIGH = 0;
+                AppUtils.showToast(a, "Плавность: ровные " + bestCap + " FPS");
             }
         } else if (GOV_PHASE == 1 && GOV_CAP > 0) {
-            if (fps < GOV_CAP * 0.85f) GOV_LOW++;
-            else GOV_LOW = 0;
-            if (GOV_LOW >= 4) {
-                int old = GOV_CAP;
+            int[] caps = capsForRate(curRate);
+            if (fps < GOV_CAP * 0.88f) {
+                GOV_LOW++;
+                GOV_HIGH = 0;
+            } else {
                 GOV_LOW = 0;
-                applyFpsCap(a, 0);
-                GOV_PHASE = 2;
-                GOV_WAIT = 60;
-                AppUtils.showToast(a, "Плавность: лимит " + old + " снят — игра его не держит");
+                if (fps >= GOV_CAP * 0.97f) GOV_HIGH++;
+                else if (GOV_HIGH > 0) GOV_HIGH = 0;
+            }
+            if (GOV_LOW >= 4) {
+                GOV_LOW = 0;
+                GOV_HIGH = 0;
+                int lower = 0;
+                for (int c : caps) {
+                    if (c < GOV_CAP) {
+                        lower = c;
+                        break;
+                    }
+                }
+                if (lower > 0) {
+                    GOV_CAP = lower;
+                    PresentExtension.fpsLimit = lower;
+                    AppUtils.showToast(a, "Плавность: ровные " + lower + " FPS");
+                }
+            } else if (GOV_HIGH >= 30) {
+                GOV_HIGH = 0;
+                int higher = 0;
+                for (int i = caps.length - 1; i >= 0; i--) {
+                    if (caps[i] > GOV_CAP) {
+                        higher = caps[i];
+                        break;
+                    }
+                }
+                if (higher > 0) {
+                    GOV_PROBE_FROM = GOV_CAP;
+                    GOV_CAP = higher;
+                    PresentExtension.fpsLimit = higher;
+                    GOV_PHASE = 2;
+                    GOV_N = 0;
+                }
             }
         } else if (GOV_PHASE == 2) {
-            GOV_PHASE = 0;
-            GOV_N = 0;
+            GOV_SAMPLES[GOV_N++] = fps;
+            if (GOV_N >= 6) {
+                float p10 = govPercentile(GOV_SAMPLES, GOV_N, 0.1f);
+                GOV_N = 0;
+                if (p10 >= GOV_CAP * 0.93f) {
+                    AppUtils.showToast(a, "Плавность: ровные " + GOV_CAP + " FPS");
+                } else {
+                    GOV_CAP = GOV_PROBE_FROM;
+                    PresentExtension.fpsLimit = GOV_PROBE_FROM;
+                }
+                GOV_PHASE = 1;
+                GOV_LOW = 0;
+                GOV_HIGH = -60;
+            }
         }
     }
 
@@ -3292,9 +3349,10 @@ public class WinlatorProSuite {
         root.setPadding(dp(ctx, 18), dp(ctx, 4), dp(ctx, 18), dp(ctx, 6));
 
         root.addView(perfTitle(ctx, "Ровные кадры (лимит FPS)"));
-        root.addView(perfHint(ctx, "По умолчанию — «Без лимита»: игра выдаёт столько кадров, сколько может. Лимит, кратный частоте экрана, "
-            + "делает кадры ровнее, но только если игра его стабильно держит. «Авто» ставит лимит лишь при запасе и сразу снимает при просадках. Без перезапуска."));
-        root.addView(perfChips(ctx, new String[]{"Авто", "30", "40", "45", "60", "Без лимита"}, new int[]{FPS_AUTO, 30, 40, 45, 60, 0},
+        root.addView(perfHint(ctx, "«Авто 30–60» (по умолчанию) держит ровные кадры: выбирает лимит 60/45/40/30, который игра стабильно держит, "
+            + "и частоту экрана, кратную ему; кадр выдаётся точно по такту экрана. Загрузки не учитываются; просела — ступень ниже, держит с запасом — выше. "
+            + "«Без лимита» — максимум кадров, но неровно. Без перезапуска."));
+        root.addView(perfChips(ctx, new String[]{"Авто 30–60", "30", "40", "45", "60", "Без лимита"}, new int[]{FPS_AUTO, 30, 40, 45, 60, 0},
             getFpsMode(activity), v -> setFpsMode(activity, v)));
 
         root.addView(perfTitle(ctx, "Оверлей FPS"));

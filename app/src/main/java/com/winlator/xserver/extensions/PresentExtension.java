@@ -107,20 +107,43 @@ public class PresentExtension extends Extension implements WindowManager.OnWindo
      * Буфер кадра возвращается игре не чаще 1/fpsLimit — кадры идут ровно, без рывков 16/33 мс.
      */
     public static volatile int fpsLimit = 0;
-    /** v12.7.4: частота экрана (vsync-ритм без лимита) — 60/90/120 вместо жёстких 60. */
+    /** v12.7.5: для ритма без лимита больше не используется (снова «не чаще 60», как в бете 4). */
     public static volatile int displayHz = 60;
+    /** v12.7.5: метка последнего vsync экрана (Choreographer) и его период — к ним привязана выдача кадров при лимите. */
+    public static volatile long vsyncNanos = 0L;
+    public static volatile long vsyncPeriodNanos = 16666667L;
 
     private void sendIdleNotifyScheduled(final Window window, final Pixmap pixmap, final int serial, final int idleFence) {
         final int limit = fpsLimit;
-        final long frameTime = 1000000000L / (limit > 0 ? limit : Math.max(30, displayHz));
+        final long period = Math.max(4000000L, vsyncPeriodNanos);
+        final long frameTime;
+        if (limit > 0) {
+            // v12.7.5: лимит = целое число тактов экрана (60 Гц: 60→1, 30→2; 90 Гц: 45→2; 120 Гц: 60→2, 40→3, 30→4)
+            long n = Math.max(1L, Math.round((1000000000.0 / limit) / period));
+            frameTime = n * period;
+        } else {
+            frameTime = 1000000000L / 60; // без лимита — как в бете 4: не чаще 60 (если игра сама просит vsync)
+        }
         long now = System.nanoTime();
 
-        // v12.7.3: только «не чаще лимита». Опоздавший кадр отдаём игре сразу — без лишнего ожидания целого кадра
-        // (прежняя схема при FPS чуть ниже лимита добавляла ещё frameTime и роняла 30 → 15–20 FPS).
+        // v12.7.3: опоздавший кадр отдаём игре сразу — без лишнего ожидания.
+        // v12.7.5: вовремя пришедший кадр выдаём точно по настоящему такту экрана — кадры не «съезжают» между тактами.
         long lastIdleTime = (long)window.getTag("lastIdleTime", now - frameTime);
-        long next = lastIdleTime + frameTime;
-        if (next < now) next = now;
-        long delayNanos = next - now;
+        long due = lastIdleTime + frameTime - 1500000L;
+        long next;
+        if (now >= due) {
+            next = now;
+        } else {
+            next = due;
+            long vs = vsyncNanos;
+            if (limit > 0 && vs > 0) {
+                long k = (due - vs + period - 1) / period;
+                if (k < 0) k = 0;
+                long aligned = vs + k * period - 1000000L;
+                if (aligned >= now) next = aligned;
+            }
+        }
+        long delayNanos = Math.max(0L, next - now);
         window.setTag("lastIdleTime", next);
 
         if (idleNotifyScheduler == null) idleNotifyScheduler = Executors.newSingleThreadScheduledExecutor();

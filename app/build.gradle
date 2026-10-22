@@ -8,8 +8,8 @@ android {
         applicationId 'com.winlator'
         minSdkVersion 26
         targetSdkVersion 28
-        versionCode 50
-        versionName "12.7.0-beta.5-Hybrid-DXVK-Pro"
+        versionCode 51
+        versionName "12.7.0-beta.6-Hybrid-DXVK-Pro"
 
         ndk {
             abiFilters 'arm64-v8a'
