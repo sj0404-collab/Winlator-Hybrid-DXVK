@@ -358,4 +358,24 @@
     <string name="fgs_notification_content_else">Winlator is running in the background</string>
     <string name="save_mem_on_run_from_steam">Save memory on run from Steam</string>
     <string name="present_mode">Present Mode</string>
+    <string name="devtools_catalog">Developer tools</string>
+    <string name="devtools_node">Node.js</string>
+    <string name="devtools_opencode">OpenCode</string>
+    <string name="devtools_open_terminal">Open terminal window here</string>
+    <string name="devtools_open_opencode">Open in OpenCode</string>
+    <string name="devtools_install">Install</string>
+    <string name="devtools_install_node">Install / update Node.js (optional)</string>
+    <string name="devtools_install_opencode">Install / update OpenCode (optional)</string>
+    <string name="devtools_remove_node">Remove Node.js</string>
+    <string name="devtools_remove_opencode">Remove OpenCode</string>
+    <string name="devtools_remove_title">Remove developer tool</string>
+    <string name="devtools_remove_prompt">Remove %1$s from this container?</string>
+    <string name="devtools_remove">Remove</string>
+    <string name="devtools_removed">Developer tool removed from this container</string>
+    <string name="devtools_opencode_install_prompt">OpenCode is not installed in this container. Download and install the current Windows x64 baseline build? The download is verified with the SHA-256 digest published by GitHub and is stored only in this container.</string>
+    <string name="devtools_starting_download">Finding the latest release…</string>
+    <string name="devtools_installed">%1$s was installed in this container.</string>
+    <string name="devtools_install_failed">Installation failed</string>
+    <string name="devtools_launch_failed">Could not start developer session</string>
+    <string name="devtools_terminal_sessions">Terminal sessions</string>
 </resources>

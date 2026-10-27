@@ -6,5 +6,8 @@
     <item android:id="@+id/menu_item_remove" android:title="@string/remove" android:icon="@drawable/icon_popup_menu_remove" android:iconTint="?attr/colorAccent" />
     <item android:id="@+id/menu_item_rename" android:title="@string/rename" android:icon="@drawable/icon_popup_menu_edit" android:iconTint="?attr/colorAccent" />
     <item android:id="@+id/menu_item_add_favorite" android:title="@string/add_to_favorites" android:icon="@drawable/icon_popup_menu_add_favorite" android:iconTint="?attr/colorAccent" />
+    <item android:id="@+id/menu_item_open_opencode" android:title="@string/devtools_open_opencode" android:icon="@drawable/icon_popup_menu_folder_open" android:iconTint="?attr/colorAccent" />
+    <item android:id="@+id/menu_item_open_terminal" android:title="@string/devtools_open_terminal" android:icon="@drawable/icon_popup_menu_folder_open" android:iconTint="?attr/colorAccent" />
+    <item android:id="@+id/menu_item_devtools" android:title="@string/devtools_catalog" android:icon="@drawable/icon_popup_menu_settings" android:iconTint="?attr/colorAccent" />
     <item android:id="@+id/menu_item_info" android:title="@string/information" android:icon="@drawable/icon_popup_menu_info" android:iconTint="?attr/colorAccent" />
 </menu>

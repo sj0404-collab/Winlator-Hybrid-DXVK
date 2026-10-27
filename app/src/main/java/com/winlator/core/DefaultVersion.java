@@ -20,6 +20,8 @@ public abstract class DefaultVersion {
     public static final String HYBRID_DXVK = "1.7.2-2.4.1-hybrid";
     /** v12.6.4: настоящий асинхронный DXVK (GPL async), шейдеры компилируются в фоне. */
     public static final String ASYNC_DXVK = "2.4.1-gplasync";
+    /** v12.7: optional DXVK 1.10.3 async component with both x64 and x86 DLL sets. */
+    public static final String ASYNC_DXVK_COMPAT = "1.10.3-async";
     public static final String FAST_DXVK = "1.7.2";
     public static final String MINOR_DXVK = "1.10.3";
     public static final String MAJOR_DXVK = "2.4.1";

@@ -23,12 +23,18 @@ import java.util.ArrayList;
 
 public class ActiveWindowsDialog extends ContentDialog {
     private final XServerDisplayActivity activity;
+    private final boolean terminalSessionsOnly;
 
     public ActiveWindowsDialog(XServerDisplayActivity activity) {
+        this(activity, false);
+    }
+
+    public ActiveWindowsDialog(XServerDisplayActivity activity, boolean terminalSessionsOnly) {
         super(activity, R.layout.active_windows_dialog);
         this.activity = activity;
+        this.terminalSessionsOnly = terminalSessionsOnly;
         setCancelable(false);
-        setTitle(R.string.active_windows);
+        setTitle(terminalSessionsOnly ? R.string.devtools_terminal_sessions : R.string.active_windows);
         setIcon(R.drawable.icon_active_windows);
 
         Button showDesktopButton = findViewById(R.id.BTCancel);
@@ -104,8 +110,17 @@ public class ActiveWindowsDialog extends ContentDialog {
         if (!window.isRenderable()) return;
 
         XServer xServer = activity.getXServer();
-        if ((window != xServer.windowManager.rootWindow && !window.isDesktopWindow() && !window.getName().isEmpty()) || window.isSurface()) {
-            result.add(window);
+        boolean candidate = (window != xServer.windowManager.rootWindow && !window.isDesktopWindow() && !window.getName().isEmpty()) || window.isSurface();
+        if (candidate) {
+            if (!terminalSessionsOnly) result.add(window);
+            else {
+                String title = window.getName();
+                Window parent = window.getParent();
+                if (title.isEmpty() && parent != null) title = parent.getName();
+                String className = window.getClassName();
+                boolean consoleWindow = className != null && className.toLowerCase(java.util.Locale.ROOT).contains("console");
+                if (title.startsWith("Winlator Dev - ") || consoleWindow) result.add(window);
+            }
         }
 
         for (Window child : window.getChildren()) {

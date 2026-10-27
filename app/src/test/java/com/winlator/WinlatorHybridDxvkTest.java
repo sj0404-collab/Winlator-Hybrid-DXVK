@@ -35,6 +35,7 @@ public class WinlatorHybridDxvkTest {
         assertTrue(names.contains("1.10.3"));
         assertTrue(names.contains("2.4.1"));
         assertTrue(names.contains("2.4.1-gplasync"));
+        assertTrue(names.contains("1.10.3-async"));
         assertEquals("1.7.2-2.4.1-hybrid", names.get(0));
     }
 
@@ -84,12 +85,14 @@ public class WinlatorHybridDxvkTest {
         File hybridDxvk = new File(assetsDir, "dxwrapper/dxvk-1.7.2-2.4.1-hybrid.tzst");
         File fastDxvk = new File(assetsDir, "dxwrapper/dxvk-1.7.2.tzst");
         File dxvk1103 = new File(assetsDir, "dxwrapper/dxvk-1.10.3.tzst");
+        File dxvk1103Async = new File(assetsDir, "dxwrapper/dxvk-1.10.3-async.tzst");
         File dxvk241 = new File(assetsDir, "dxwrapper/dxvk-2.4.1.tzst");
         File steamSetup = new File(assetsDir, "steam/SteamSetup.exe");
 
         assertTrue("dxvk-1.7.2-2.4.1-hybrid.tzst must exist", hybridDxvk.isFile() && hybridDxvk.length() > 4_000_000L);
         assertTrue("dxvk-1.7.2.tzst must exist", fastDxvk.isFile() && fastDxvk.length() > 2_500_000L);
         assertTrue("dxvk-1.10.3.tzst must exist", dxvk1103.isFile() && dxvk1103.length() > 2_500_000L);
+        assertTrue("dxvk-1.10.3-async.tzst must exist", dxvk1103Async.isFile() && dxvk1103Async.length() > 3_000_000L);
         assertTrue("dxvk-2.4.1.tzst must exist", dxvk241.isFile() && dxvk241.length() > 3_000_000L);
         assertTrue("SteamSetup.exe must exist", steamSetup.isFile() && steamSetup.length() > 1_500_000L);
     }
