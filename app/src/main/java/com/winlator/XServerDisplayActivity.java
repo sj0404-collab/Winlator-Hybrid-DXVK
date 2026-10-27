@@ -34,6 +34,7 @@ import com.winlator.container.ContainerManager;
 import com.winlator.container.DXWrappers;
 import com.winlator.container.GraphicsDrivers;
 import com.winlator.container.Shortcut;
+import com.winlator.devtools.DeveloperToolsLauncher;
 import com.winlator.contentdialog.ActiveWindowsDialog;
 import com.winlator.contentdialog.AudioDriverConfigDialog;
 import com.winlator.contentdialog.ContentDialog;
@@ -106,6 +107,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public class XServerDisplayActivity extends AppCompatActivity implements NavigationView.OnNavigationItemSelectedListener {
+    private static volatile XServerDisplayActivity currentDisplayActivity;
     private XServerView xServerView;
     private InputControlsView inputControlsView;
     private TouchpadView touchpadView;
@@ -153,6 +155,7 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
     public void onCreate(Bundle savedInstanceState) {
         AppUtils.setActivityTheme(this);
         super.onCreate(savedInstanceState);
+        currentDisplayActivity = this;
         AppUtils.hideSystemUI(this);
         AppUtils.keepScreenOn(this);
         setContentView(R.layout.xserver_display_activity);
@@ -384,6 +387,7 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
             if (environment != null) environment.stopEnvironmentComponents();
             ForegroundService.stopSession(this);
         } catch (Throwable ignored) {}
+        if (currentDisplayActivity == this) currentDisplayActivity = null;
         super.onDestroy();
     }
 
@@ -419,6 +423,14 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
                 break;
             case R.id.menu_item_active_windows:
                 (new ActiveWindowsDialog(this)).show();
+                drawerLayout.closeDrawers();
+                break;
+            case R.id.menu_item_terminal_sessions:
+                (new ActiveWindowsDialog(this, true)).show();
+                drawerLayout.closeDrawers();
+                break;
+            case R.id.menu_item_devtools:
+                DeveloperToolsLauncher.showCatalog(this, container, getDeveloperWorkingDirectory());
                 drawerLayout.closeDrawers();
                 break;
             case R.id.menu_item_magnifier:
@@ -535,13 +547,14 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
             String uPath = WineUtils.dosToUnixPath(shortcut.path, container);
             if (uPath != null && !uPath.isEmpty()) targetExecFile = new File(uPath);
         }
+        boolean developerToolSession = getIntent().getBooleanExtra("developer_tool_session", false);
         launchTargetExe = targetExecFile;
-        String extraWinePath = WinlatorProSuite.prepareGameFolderAndDependencies(this, container, targetExecFile);
-        if (extraWinePath != null && !extraWinePath.isEmpty()) {
-            envVars.put("WINEPATH", extraWinePath);
+        if (!developerToolSession) {
+            String extraWinePath = WinlatorProSuite.prepareGameFolderAndDependencies(this, container, targetExecFile);
+            if (extraWinePath != null && !extraWinePath.isEmpty()) envVars.put("WINEPATH", extraWinePath);
         }
         WineUtils.createDosdevicesSymlinks(container, true);
-        if (targetExecFile != null && targetExecFile.exists()) {
+        if (!developerToolSession && targetExecFile != null && targetExecFile.exists()) {
             WinlatorProSuite.pinExecutableToDesktopWithIcon(this, container, targetExecFile);
         }
 
@@ -1012,6 +1025,9 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
 
         if (dxwrapper.equals(DXWrappers.DXVK)) {
             DXVKConfigDialog.setEnvVars(this, dxwrapperConfig[0], envVars);
+            // v12.7: keep warning/error diagnostics available without verbose per-frame logging overhead.
+            envVars.put("DXVK_LOG_LEVEL", "warn");
+            envVars.put("DXVK_LOG_PATH", RootFS.getDosUserCachePath());
             envVars.put("WINEDLLOVERRIDES", "mscoree,mshtml=d;d3d11,dxgi,d3d10core,d3d10,d3d10_1,d3d9,d3d8,d3dcompiler_47,d3dcompiler_46,d3dcompiler_43=n,b");
             cacheId += dxwrapper+"-"+requestedDxvkVer;
         }
@@ -1264,6 +1280,40 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
 
     public FrameRating getFrameRating() {
         return frameRating;
+    }
+
+    private File getDeveloperWorkingDirectory() {
+        String preferred = getIntent().getStringExtra("developer_working_directory");
+        if (preferred != null) {
+            File selected = new File(preferred);
+            if (selected.isDirectory()) return selected;
+        }
+        if (launchTargetExe != null) {
+            File parent = launchTargetExe.isDirectory() ? launchTargetExe : launchTargetExe.getParentFile();
+            if (parent != null && parent.isDirectory()) return parent;
+        }
+        File documents = new File(container.getRootDir(), ".wine/drive_c/users/xuser/Documents");
+        if (documents.isDirectory()) return documents;
+        File driveC = new File(container.getRootDir(), ".wine/drive_c");
+        driveC.mkdirs();
+        return driveC;
+    }
+
+    public static XServerDisplayActivity getCurrentDisplayActivity() {
+        return currentDisplayActivity;
+    }
+
+    public void runDeveloperScript(File script) {
+        if (container == null || winHandler == null || script == null || !script.isFile()) {
+            AppUtils.showToast(this, getString(R.string.devtools_launch_failed));
+            return;
+        }
+        String dosScript = WineUtils.unixToDOSPath(script.getAbsolutePath(), container);
+        if (dosScript == null || dosScript.isEmpty()) {
+            AppUtils.showToast(this, getString(R.string.devtools_launch_failed));
+            return;
+        }
+        winHandler.exec("C:\\windows\\system32\\cmd.exe", "/c \"" + dosScript + "\"");
     }
 
     public WinHandler getWinHandler() {

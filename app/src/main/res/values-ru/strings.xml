@@ -299,4 +299,24 @@
     <string name="enable_background_wakelock">Включить wakelock, когда устройство заблокировано</string>
     <string name="save_mem_on_run_from_steam">Экономия памяти при запуске из Steam</string>
     <string name="present_mode">Режим презентации</string>
+    <string name="devtools_catalog">Инструменты разработчика</string>
+    <string name="devtools_node">Node.js</string>
+    <string name="devtools_opencode">OpenCode</string>
+    <string name="devtools_open_terminal">Открыть окно терминала здесь</string>
+    <string name="devtools_open_opencode">Открыть в OpenCode</string>
+    <string name="devtools_install">Установить</string>
+    <string name="devtools_install_node">Установить / обновить Node.js (опционально)</string>
+    <string name="devtools_install_opencode">Установить / обновить OpenCode (опционально)</string>
+    <string name="devtools_remove_node">Удалить Node.js</string>
+    <string name="devtools_remove_opencode">Удалить OpenCode</string>
+    <string name="devtools_remove_title">Удалить инструмент разработчика</string>
+    <string name="devtools_remove_prompt">Удалить %1$s из этого контейнера?</string>
+    <string name="devtools_remove">Удалить</string>
+    <string name="devtools_removed">Инструмент удалён из этого контейнера</string>
+    <string name="devtools_opencode_install_prompt">OpenCode не установлен в этом контейнере. Скачать и установить актуальную Windows x64 baseline-версию? Загрузка проверяется по SHA-256, опубликованному GitHub, и сохраняется только в этом контейнере.</string>
+    <string name="devtools_starting_download">Поиск актуального релиза…</string>
+    <string name="devtools_installed">%1$s установлен в этом контейнере.</string>
+    <string name="devtools_install_failed">Не удалось установить</string>
+    <string name="devtools_launch_failed">Не удалось запустить сеанс разработчика</string>
+    <string name="devtools_terminal_sessions">Сеансы терминала</string>
 </resources>

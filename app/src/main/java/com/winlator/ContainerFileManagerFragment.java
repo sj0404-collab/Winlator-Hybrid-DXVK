@@ -24,6 +24,7 @@ import androidx.recyclerview.widget.RecyclerView;
 
 import com.winlator.container.Container;
 import com.winlator.container.FileInfo;
+import com.winlator.devtools.DeveloperToolsLauncher;
 import com.winlator.contentdialog.ContentDialog;
 import com.winlator.contentdialog.FileInfoDialog;
 import com.winlator.core.AppUtils;
@@ -333,6 +334,17 @@ public class ContainerFileManagerFragment extends BaseFileManagerFragment<FileIn
 
             Menu menu = listItemMenu.getMenu();
             menu.findItem(R.id.menu_item_settings).setVisible(false);
+            File workspace = null;
+            MSLink.LinkInfo selectedLink = file.getLinkinfo();
+            if (selectedLink != null && selectedLink.isDirectory) {
+                String linkTarget = WineUtils.dosToUnixPath(selectedLink.targetPath, container);
+                if (linkTarget != null && !linkTarget.isEmpty()) workspace = new File(linkTarget);
+            }
+            else if (file.type == FileInfo.Type.DIRECTORY) workspace = file.toFile();
+            if (workspace != null && !workspace.isDirectory()) workspace = null;
+            menu.findItem(R.id.menu_item_open_opencode).setVisible(workspace != null);
+            menu.findItem(R.id.menu_item_open_terminal).setVisible(workspace != null);
+            final File selectedWorkspace = workspace;
 
             if (folderStack.isEmpty()) {
                 menu.findItem(R.id.menu_item_cut).setVisible(false);
@@ -364,6 +376,15 @@ public class ContainerFileManagerFragment extends BaseFileManagerFragment<FileIn
                         break;
                     case R.id.menu_item_add_favorite:
                         addFavorite(file);
+                        break;
+                    case R.id.menu_item_open_opencode:
+                        if (selectedWorkspace != null) DeveloperToolsLauncher.openInOpenCode((Activity)context, container, selectedWorkspace);
+                        break;
+                    case R.id.menu_item_open_terminal:
+                        if (selectedWorkspace != null) DeveloperToolsLauncher.openTerminal((Activity)context, container, selectedWorkspace);
+                        break;
+                    case R.id.menu_item_devtools:
+                        DeveloperToolsLauncher.showCatalog((Activity)context, container, selectedWorkspace);
                         break;
                     case R.id.menu_item_info:
                         (new FileInfoDialog(context, file, container)).show();

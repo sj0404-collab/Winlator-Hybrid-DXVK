@@ -132,6 +132,11 @@ public class DXVKConfigDialog extends ContentDialog {
         content += "[GTA5.exe]\n";
         content += "dxgi.maxDeviceMemory = 512\n";
         content += "dxgi.maxSharedMemory = 512\n";
+        // v12.7: limit shader compilation to 2–4 workers so the game retains CPU headroom.
+        int cores = Runtime.getRuntime().availableProcessors();
+        int compilerThreads = Math.max(2, Math.min(4, cores / 2));
+        content += "dxvk.numCompilerThreads = " + compilerThreads + "\n";
+        content += "dxvk.numAsyncThreads = " + Math.max(1, compilerThreads - 1) + "\n";
         return content;
     }
 }
