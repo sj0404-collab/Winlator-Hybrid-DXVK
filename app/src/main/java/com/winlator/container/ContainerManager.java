@@ -225,6 +225,35 @@ public class ContainerManager {
         return fileInfos;
     }
 
+    /** Imports a full container archive as a new, independently numbered container. */
+    public Container importBackup(android.net.Uri source) {
+        if (source == null) return null;
+        int id = maxContainerId + 1;
+        File containerDir = new File(homeDir, RootFS.USER+"-"+id);
+        if (!containerDir.mkdirs()) return null;
+
+        if (!com.winlator.core.ContainerBackupArchive.importFrom(context, source, containerDir)) {
+            FileUtils.delete(containerDir);
+            return null;
+        }
+
+        try {
+            Container container = new Container(id);
+            container.setRootDir(containerDir);
+            JSONObject data = new JSONObject(FileUtils.readString(container.getConfigFile()));
+            container.loadData(data);
+            container.setName(container.getName() + context.getString(R.string.restored_copy_suffix));
+            container.saveData();
+            maxContainerId = id;
+            containers.add(container);
+            return container;
+        }
+        catch (Exception e) {
+            FileUtils.delete(containerDir);
+            return null;
+        }
+    }
+
     public int getNextContainerId() {
         return maxContainerId + 1;
     }

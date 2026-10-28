@@ -4,6 +4,11 @@
     xmlns:app="http://schemas.android.com/apk/res-auto">
     <item
         android:icon="@drawable/icon_open"
+        android:id="@+id/menu_item_import_backup"
+        android:title="@string/import_container_backup"
+        app:showAsAction="never" />
+    <item
+        android:icon="@drawable/icon_open"
         android:id="@+id/menu_item_import_exe"
         android:title="Импорт и запуск .EXE"
         app:showAsAction="always" />
