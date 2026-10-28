@@ -2,6 +2,8 @@ package com.winlator;
 
 import android.content.Intent;
 import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
+import android.util.TypedValue;
 import android.os.Bundle;
 import android.view.Gravity;
 import android.view.LayoutInflater;
@@ -17,8 +19,7 @@ import androidx.fragment.app.Fragment;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
-import com.google.android.material.card.MaterialCardView;
-import com.google.android.material.button.MaterialButton;
+import androidx.appcompat.widget.AppCompatButton;
 import com.winlator.container.Container;
 import com.winlator.container.ContainerManager;
 import com.winlator.container.Shortcut;
@@ -133,10 +134,10 @@ public class GameLibraryFragment extends Fragment {
     }
 
     private View createSteamCard() {
-        MaterialCardView card = new MaterialCardView(requireContext());
-        card.setRadius(dp(12));
-        card.setCardElevation(dp(2));
-        card.setUseCompatPadding(true);
+        LinearLayout card = new LinearLayout(requireContext());
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setBackground(createCardBackground());
+        card.setElevation(dp(2));
         LinearLayout column = new LinearLayout(requireContext());
         column.setOrientation(LinearLayout.VERTICAL);
         column.setPadding(dp(16), dp(12), dp(16), dp(12));
@@ -155,12 +156,12 @@ public class GameLibraryFragment extends Fragment {
 
         LinearLayout buttons = new LinearLayout(requireContext());
         buttons.setOrientation(LinearLayout.HORIZONTAL);
-        MaterialButton installOrOpen = new MaterialButton(requireContext());
+        AppCompatButton installOrOpen = new AppCompatButton(requireContext());
         installOrOpen.setText(R.string.steam_backend_install_open);
         installOrOpen.setOnClickListener(view -> chooseContainer(this::installOrOpenSteam));
         buttons.addView(installOrOpen, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
 
-        MaterialButton sync = new MaterialButton(requireContext());
+        AppCompatButton sync = new AppCompatButton(requireContext());
         sync.setText(R.string.steam_backend_sync);
         sync.setOnClickListener(view -> chooseContainer(this::syncSteam));
         LinearLayout.LayoutParams syncParams = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1);
@@ -172,10 +173,10 @@ public class GameLibraryFragment extends Fragment {
     }
 
     private View createEpicCard() {
-        MaterialCardView card = new MaterialCardView(requireContext());
-        card.setRadius(dp(12));
-        card.setCardElevation(dp(2));
-        card.setUseCompatPadding(true);
+        LinearLayout card = new LinearLayout(requireContext());
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setBackground(createCardBackground());
+        card.setElevation(dp(2));
         LinearLayout column = new LinearLayout(requireContext());
         column.setOrientation(LinearLayout.VERTICAL);
         column.setPadding(dp(16), dp(12), dp(16), dp(12));
@@ -194,12 +195,12 @@ public class GameLibraryFragment extends Fragment {
 
         LinearLayout buttons = new LinearLayout(requireContext());
         buttons.setOrientation(LinearLayout.HORIZONTAL);
-        MaterialButton installOrOpen = new MaterialButton(requireContext());
+        AppCompatButton installOrOpen = new AppCompatButton(requireContext());
         installOrOpen.setText(R.string.epic_backend_install_open);
         installOrOpen.setOnClickListener(view -> chooseContainer(this::installOrOpenEpic));
         buttons.addView(installOrOpen, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
 
-        MaterialButton sync = new MaterialButton(requireContext());
+        AppCompatButton sync = new AppCompatButton(requireContext());
         sync.setText(R.string.epic_backend_sync);
         sync.setOnClickListener(view -> chooseContainer(this::syncEpic));
         LinearLayout.LayoutParams syncParams = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1);
@@ -373,6 +374,16 @@ public class GameLibraryFragment extends Fragment {
         });
     }
 
+    private GradientDrawable createCardBackground() {
+        TypedValue value = new TypedValue();
+        int color = requireContext().getTheme().resolveAttribute(R.attr.colorSecondarySurface, value, true)
+            ? value.data : 0xFF2D3238;
+        GradientDrawable background = new GradientDrawable();
+        background.setColor(color);
+        background.setCornerRadius(dp(12));
+        return background;
+    }
+
     private int dp(float value) {
         return Math.round(value * getResources().getDisplayMetrics().density);
     }
@@ -389,14 +400,15 @@ public class GameLibraryFragment extends Fragment {
         @NonNull
         @Override
         public GameViewHolder onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
-            MaterialCardView card = new MaterialCardView(parent.getContext());
+            LinearLayout card = new LinearLayout(parent.getContext());
+            card.setOrientation(LinearLayout.VERTICAL);
+            card.setBackground(createCardBackground());
+            card.setElevation(dp(2));
             RecyclerView.LayoutParams cardParams = new RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
             cardParams.bottomMargin = dp(10);
             card.setLayoutParams(cardParams);
             card.setClickable(true);
             card.setFocusable(true);
-            card.setCardElevation(dp(2));
-            card.setRadius(dp(12));
 
             LinearLayout row = new LinearLayout(parent.getContext());
             row.setGravity(Gravity.CENTER_VERTICAL);
