@@ -321,11 +321,6 @@
     <string name="save_data_imported">Сохранения восстановлены</string>
     <string name="confirm_save_data_export">Экспортируются распространённые папки с сейвами и данными: Saved Games, Documents, AppData/Roaming, AppData/Local и AppData/LocalLow. Установленные игры в архив не входят. В архиве могут быть настройки приложений и данные аккаунтов.</string>
     <string name="confirm_save_data_restore">Восстановить папки сохранений и пользовательских данных в этот контейнер? Совпадающие файлы могут быть заменены. Если может понадобиться откат, сначала экспортируйте текущие данные.</string>
-    <string name="game_library">Библиотека игр</string>
-    <string name="game_library_description">Игры из библиотеки запускаются непосредственно в среде Winlator Hybrid.</string>
-    <string name="game_library_empty">Игры не найдены. Добавьте ярлык Windows-игры в контейнер, чтобы увидеть её здесь.</string>
-    <string name="game_library_hybrid_source">Ярлык Hybrid</string>
-    <string name="game_library_item_metadata">%1$s · %2$s</string>
 
     <string name="steam_backend_title">Steam</string>
     <string name="steam_backend_description">Официальный Windows-клиент Valve запускается внутри контейнера Hybrid. Войдите в аккаунт, скачайте и установите игры через Steam, затем импортируйте установленные игры в библиотеку. Совместимость зависит от игры.</string>

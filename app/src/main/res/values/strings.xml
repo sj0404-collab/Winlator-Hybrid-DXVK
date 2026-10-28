@@ -380,11 +380,6 @@
     <string name="save_data_imported">Save data restored</string>
     <string name="confirm_save_data_export">Exports common save and user-data folders: Saved Games, Documents, AppData/Roaming, AppData/Local and AppData/LocalLow. This does not include installed games. The archive may contain application settings or account data.</string>
     <string name="confirm_save_data_restore">Restore save and user-data folders into this container? Matching files may be replaced. Export the current data first if you may need to undo this.</string>
-    <string name="game_library">Game library</string>
-    <string name="game_library_description">Games in this library launch directly in the Winlator Hybrid runtime.</string>
-    <string name="game_library_empty">No games found. Add a Windows game shortcut in a container to see it here.</string>
-    <string name="game_library_hybrid_source">Hybrid shortcut</string>
-    <string name="game_library_item_metadata">%1$s · %2$s</string>
 
     <string name="steam_backend_title">Steam</string>
     <string name="steam_backend_description">Use Valve’s official Windows client inside a Hybrid container. Sign in, download and install through Steam; then import installed games below. Compatibility varies by game.</string>
