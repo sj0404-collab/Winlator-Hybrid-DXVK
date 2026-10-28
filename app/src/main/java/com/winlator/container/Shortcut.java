@@ -37,6 +37,7 @@ public class Shortcut {
         else {
             String execArgs = "";
             String desktopWorkingDir = "";
+            String desktopName = "";
             Bitmap icon = null;
             File iconFile = null;
             String wmClass = "";
@@ -56,6 +57,7 @@ public class Shortcut {
                     String value = line.substring(index+1);
 
                     if (section.equals("Desktop Entry")) {
+                        if (key.equals("Name")) desktopName = value;
                         if (key.equals("Exec")) execArgs = value;
                         if (key.equals("Path")) desktopWorkingDir = StringUtils.unescapeDOSPath(value);
                         if (key.equals("Icon")) {
@@ -78,7 +80,7 @@ public class Shortcut {
                 }
             }
 
-            this.name = FileUtils.getBasename(file.getPath());
+            this.name = !desktopName.trim().isEmpty() ? desktopName.trim() : FileUtils.getBasename(file.getPath());
             this.icon = icon;
             this.iconFile = iconFile;
             this.wmClass = wmClass;

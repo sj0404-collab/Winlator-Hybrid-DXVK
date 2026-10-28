@@ -210,6 +210,9 @@ public class MainActivity extends AppCompatActivity implements NavigationView.On
         }
 
         switch (item.getItemId()) {
+            case R.id.menu_item_game_library:
+                showFragment(new GameLibraryFragment());
+                break;
             case R.id.menu_item_shortcuts:
                 preferences.edit().putBoolean("show_shortcuts_first", true).apply();
                 showFragment(new ShortcutsFragment());
@@ -248,6 +251,9 @@ public class MainActivity extends AppCompatActivity implements NavigationView.On
         }
         else if (currentFragment instanceof ShortcutsFragment) {
             showFragment(new ShortcutsFragment());
+        }
+        else if (currentFragment instanceof GameLibraryFragment) {
+            showFragment(new GameLibraryFragment());
         }
     }
 }

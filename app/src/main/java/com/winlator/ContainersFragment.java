@@ -38,6 +38,10 @@ import java.util.ArrayList;
 import java.util.List;
 
 public class ContainersFragment extends Fragment {
+    private static final int REQUEST_IMPORT_CONTAINER_BACKUP = 41;
+    private static final int REQUEST_EXPORT_CONTAINER_BACKUP = 42;
+    private static final int REQUEST_EXPORT_SAVE_DATA = 43;
+    private static final int REQUEST_IMPORT_SAVE_DATA = 44;
     private RecyclerView recyclerView;
     private TextView emptyTextView;
     private ContainerManager manager;
@@ -63,6 +67,79 @@ public class ContainersFragment extends Fragment {
         loadContainersList();
         ((AppCompatActivity)getActivity()).getSupportActionBar().setTitle(R.string.containers);
     }
+
+    @Override
+    public void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (resultCode != Activity.RESULT_OK || data == null || data.getData() == null) {
+            if (requestCode == REQUEST_EXPORT_CONTAINER_BACKUP) pendingExportContainer = null;
+            if (requestCode == REQUEST_EXPORT_SAVE_DATA) pendingSaveExportContainer = null;
+            if (requestCode == REQUEST_IMPORT_SAVE_DATA) pendingSaveRestoreContainer = null;
+            return;
+        }
+        final MainActivity activity = (MainActivity)getActivity();
+        if (activity == null) return;
+        final android.net.Uri uri = data.getData();
+
+        if (requestCode == REQUEST_EXPORT_CONTAINER_BACKUP) {
+            final Container selected = pendingExportContainer;
+            pendingExportContainer = null;
+            if (selected == null) return;
+            preloaderDialog.show(R.string.exporting_container_backup);
+            java.util.concurrent.Executors.newSingleThreadExecutor().execute(() -> {
+                boolean success = com.winlator.core.ContainerBackupArchive.exportTo(activity, selected, uri);
+                if (!success) activity.getContentResolver().delete(uri, null, null);
+                activity.runOnUiThread(() -> {
+                    preloaderDialog.close();
+                    com.winlator.core.AppUtils.showToast(activity, success ? R.string.container_backup_exported : R.string.container_backup_failed);
+                });
+            });
+        }
+        else if (requestCode == REQUEST_EXPORT_SAVE_DATA) {
+            final Container selected = pendingSaveExportContainer;
+            pendingSaveExportContainer = null;
+            if (selected == null) return;
+            preloaderDialog.show(R.string.exporting_save_data);
+            java.util.concurrent.Executors.newSingleThreadExecutor().execute(() -> {
+                boolean success = com.winlator.core.SaveDataArchive.exportTo(activity, selected, uri);
+                if (!success) activity.getContentResolver().delete(uri, null, null);
+                activity.runOnUiThread(() -> {
+                    preloaderDialog.close();
+                    com.winlator.core.AppUtils.showToast(activity, success ? R.string.save_data_exported : R.string.container_backup_failed);
+                });
+            });
+        }
+        else if (requestCode == REQUEST_IMPORT_SAVE_DATA) {
+            final Container selected = pendingSaveRestoreContainer;
+            pendingSaveRestoreContainer = null;
+            if (selected == null) return;
+            ContentDialog.confirm(activity, R.string.confirm_save_data_restore, () -> {
+                preloaderDialog.show(R.string.importing_save_data);
+                java.util.concurrent.Executors.newSingleThreadExecutor().execute(() -> {
+                    boolean success = com.winlator.core.SaveDataArchive.importTo(activity, uri, selected);
+                    activity.runOnUiThread(() -> {
+                        preloaderDialog.close();
+                        com.winlator.core.AppUtils.showToast(activity, success ? R.string.save_data_imported : R.string.container_backup_failed);
+                    });
+                });
+            });
+        }
+        else if (requestCode == REQUEST_IMPORT_CONTAINER_BACKUP) {
+            preloaderDialog.show(R.string.importing_container_backup);
+            java.util.concurrent.Executors.newSingleThreadExecutor().execute(() -> {
+                Container restored = manager.importBackup(uri);
+                activity.runOnUiThread(() -> {
+                    preloaderDialog.close();
+                    loadContainersList();
+                    com.winlator.core.AppUtils.showToast(activity, restored != null ? R.string.container_backup_imported : R.string.container_backup_failed);
+                });
+            });
+        }
+    }
+
+    private Container pendingExportContainer;
+    private Container pendingSaveExportContainer;
+    private Container pendingSaveRestoreContainer;
 
     @Nullable
     @Override
@@ -99,6 +176,14 @@ public class ContainersFragment extends Fragment {
                 .addToBackStack(null)
                 .replace(R.id.FLFragmentContainer, new ContainerDetailFragment())
                 .commit();
+            return true;
+        }
+        else if (menuItem.getItemId() == R.id.menu_item_import_backup) {
+            if (!RootFS.find(getContext()).isValid()) return false;
+            Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+            intent.addCategory(Intent.CATEGORY_OPENABLE);
+            intent.setType("*/*");
+            startActivityForResult(intent, REQUEST_IMPORT_CONTAINER_BACKUP);
             return true;
         }
         else if (menuItem.getItemId() == R.id.menu_item_import_exe) {
@@ -183,6 +268,40 @@ public class ContainersFragment extends Fragment {
 
             listItemMenu.setOnMenuItemClickListener((menuItem) -> {
                 switch (menuItem.getItemId()) {
+                    case R.id.menu_item_export_save_data: {
+                        ContentDialog.confirm(activity, R.string.confirm_save_data_export, () -> {
+                            pendingSaveExportContainer = container;
+                            String filename = com.winlator.core.StringUtils.clearReservedChars(container.getName()).trim();
+                            if (filename.isEmpty()) filename = "Winlator-Saves";
+                            Intent exportIntent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+                            exportIntent.addCategory(Intent.CATEGORY_OPENABLE);
+                            exportIntent.setType("application/octet-stream");
+                            exportIntent.putExtra(Intent.EXTRA_TITLE, filename + ".wsaves.tar.zst");
+                            startActivityForResult(exportIntent, REQUEST_EXPORT_SAVE_DATA);
+                        });
+                        break;
+                    }
+                    case R.id.menu_item_import_save_data: {
+                        pendingSaveRestoreContainer = container;
+                        Intent importIntent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                        importIntent.addCategory(Intent.CATEGORY_OPENABLE);
+                        importIntent.setType("*/*");
+                        startActivityForResult(importIntent, REQUEST_IMPORT_SAVE_DATA);
+                        break;
+                    }
+                    case R.id.menu_item_export_backup: {
+                        ContentDialog.confirm(activity, R.string.confirm_container_backup_export, () -> {
+                            pendingExportContainer = container;
+                            String filename = com.winlator.core.StringUtils.clearReservedChars(container.getName()).trim();
+                            if (filename.isEmpty()) filename = "Winlator-Container";
+                            Intent exportIntent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+                            exportIntent.addCategory(Intent.CATEGORY_OPENABLE);
+                            exportIntent.setType("application/octet-stream");
+                            exportIntent.putExtra(Intent.EXTRA_TITLE, filename + ".wcontainer.tar.zst");
+                            startActivityForResult(exportIntent, REQUEST_EXPORT_CONTAINER_BACKUP);
+                        });
+                        break;
+                    }
                     case R.id.menu_item_file_manager:
                         activity.showFragment(new ContainerFileManagerFragment(container.id));
                         break;

@@ -253,10 +253,11 @@ public class ShortcutsFragment extends BaseFileManagerFragment<Shortcut> {
                     }
 
                     File exeFile = (unixPath != null && !unixPath.isEmpty()) ? new File(unixPath) : null;
+                    boolean steamLaunch = "Steam".equalsIgnoreCase(shortcut.getExtra("storeSource", ""));
                     if (exeFile != null && exeFile.exists()) {
                         exeFile = WinlatorProSuite.resolveFullFolderExeIfOrphan(exeFile);
-                        WinlatorProSuite.prepareGameFolderAndDependencies(activity, shortcut.container, exeFile);
-                        WinlatorProSuite.pinExecutableToDesktopWithIcon(activity, shortcut.container, exeFile);
+                        WinlatorProSuite.prepareGameFolderAndDependencies(activity, shortcut.container, steamLaunch ? null : exeFile);
+                        if (!steamLaunch) WinlatorProSuite.pinExecutableToDesktopWithIcon(activity, shortcut.container, exeFile);
                     } else {
                         WinlatorProSuite.prepareGameFolderAndDependencies(activity, shortcut.container, null);
                     }
